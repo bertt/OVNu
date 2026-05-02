@@ -203,6 +203,20 @@ main {
 .dep-line-col { color: var(--blue); font-weight: 700; white-space: nowrap; }
 .dep-dest     { color: var(--gray-900); }
 
+.dest-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--blue);
+  cursor: pointer;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+.dest-btn:hover { color: var(--blue-dark); text-decoration-style: solid; }
+
 .route-btn {
   background: none;
   border: 1px solid var(--gray-200);

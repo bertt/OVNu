@@ -257,7 +257,7 @@ async function renderDepartures(stopName, dayType) {
     html += `<tr class="${cls}">
       <td class="dep-time">${displayTime}</td>
       <td class="dep-line-col">${escHtml(dep.line)}</td>
-      <td class="dep-dest">${escHtml(dep.headsign)}</td>
+      <td class="dep-dest"><button class="dest-btn" data-headsign="${escHtml(dep.headsign)}">${escHtml(dep.headsign)}</button></td>
       ${shapeBtn}
     </tr>`;
   });
@@ -279,6 +279,11 @@ async function renderDepartures(stopName, dayType) {
         map.fitBounds(routePolyline.getBounds(), { padding: [30, 30] });
       }
     });
+  });
+
+  // Attach destination click handlers — navigate to the terminus stop
+  container.querySelectorAll('.dest-btn').forEach(btn => {
+    btn.addEventListener('click', () => navigateToHeadsign(btn.dataset.headsign));
   });
 
 }
