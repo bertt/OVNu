@@ -247,13 +247,15 @@ async function renderDepartures(stopName, dayType) {
     <thead><tr><th>Tijd</th><th>Lijn</th><th>Richting</th>${hasShape ? '<th></th>' : ''}</tr></thead>
     <tbody>`;
   deps.forEach((dep, i) => {
-    const displayTime = dep.time.slice(0, 5);
+    const [h, m] = dep.time.split(':').map(Number);
+    const overnight = h >= 24;
+    const displayTime = `${String(h % 24).padStart(2, '0')}:${String(m).padStart(2, '0')}${overnight ? '<span class="overnight" title="Volgende dag">+1</span>' : ''}`;
     const cls = i === 0 && isToday ? 'next-up' : '';
     const shapeBtn = dep.shape_id
       ? `<td><button class="route-btn" data-shape="${escHtml(dep.shape_id)}" title="Toon route op kaart">🗺</button></td>`
       : (hasShape ? '<td></td>' : '');
     html += `<tr class="${cls}">
-      <td class="dep-time">${escHtml(displayTime)}</td>
+      <td class="dep-time">${displayTime}</td>
       <td class="dep-line-col">${escHtml(dep.line)}</td>
       <td class="dep-dest">${escHtml(dep.headsign)}</td>
       ${shapeBtn}
@@ -278,6 +280,31 @@ async function renderDepartures(stopName, dayType) {
       }
     });
   });
+
+}
+
+function navigateToHeadsign(headsign) {
+  if (!dataLoaded) return;
+  const words = headsign.toLowerCase().split(/\s+/).filter(Boolean);
+  const longWords = words.filter(w => w.length > 2);
+  const searchWords = longWords.length > 0 ? longWords : words;
+
+  const seen = new Set();
+  const matches = stops.filter(s => {
+    const name = s.name.toLowerCase();
+    if (!searchWords.every(w => name.includes(w))) return false;
+    if (seen.has(s.name)) return false;
+    seen.add(s.name);
+    return true;
+  });
+
+  if (matches.length === 0) {
+    showStatus(`Geen halte gevonden voor "${headsign}".`, '');
+    setTimeout(hideStatus, 3000);
+    return;
+  }
+  document.getElementById('searchInput').value = matches[0].name;
+  centreOnStop(matches[0]);
 }
 
 function escHtml(str) {
@@ -303,18 +330,25 @@ function setupSearch() {
     if (q.length < 2) { hideAutocomplete(); return; }
     if (!dataLoaded) return;
 
-    // Split query into words and require all words to appear in the stop name
+    // Split query into words; try strict AND first, relax short words if few results
     const words = q.split(/\s+/).filter(Boolean);
+    const longWords = words.filter(w => w.length > 2);
     const seen = new Set();
-    const matches = stops
-      .filter(s => {
-        const name = s.name.toLowerCase();
-        if (!words.every(w => name.includes(w))) return false;
-        if (seen.has(s.name)) return false;
-        seen.add(s.name);
-        return true;
-      })
-      .slice(0, 12);
+
+    const matchFn = (wordList) => stops.filter(s => {
+      const name = s.name.toLowerCase();
+      if (!wordList.every(w => name.includes(w))) return false;
+      if (seen.has(s.name)) return false;
+      seen.add(s.name);
+      return true;
+    });
+
+    let matches = matchFn(words);
+    // Relax: if few results and query has short words (de/in/op), retry with long words only
+    if (matches.length < 3 && longWords.length > 0 && longWords.length < words.length) {
+      matches = [...matches, ...matchFn(longWords)];
+    }
+    matches = matches.slice(0, 12);
 
     if (matches.length === 0) { hideAutocomplete(); return; }
     showAutocomplete(matches, input);

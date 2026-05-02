@@ -199,6 +199,7 @@ main {
 
 .dep-table td { padding: .45rem .7rem; }
 .dep-time     { font-variant-numeric: tabular-nums; white-space: nowrap; font-weight: 600; }
+.overnight    { font-size: .65rem; font-weight: 400; color: var(--gray-700); vertical-align: super; margin-left: 1px; }
 .dep-line-col { color: var(--blue); font-weight: 700; white-space: nowrap; }
 .dep-dest     { color: var(--gray-900); }
 
