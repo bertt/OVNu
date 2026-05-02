@@ -1,0 +1,439 @@
+/**
+ * app.js – client-side logic for OVNu.
+ *
+ * Flow:
+ *  1. Load stops.json from ../data/ (lazy-load per-stop schedule on demand)
+ *  2. User triggers GPS or searches by name
+ *  3. Find nearest stops/stations (haversine)
+ *  4. Show on map + list
+ *  5. User selects stop → show departures for chosen day
+ */
+
+// ── Data loading ──────────────────────────────────────────────────────────────
+
+let stops = [];        // [{id, name, lat, lon, town}]
+let dataLoaded = false;
+const scheduleCache = {}; // stop_id → {weekday:[], saturday:[], sunday:[]}
+
+async function loadData() {
+  const res = await fetch('../data/stops.json');
+  if (!res.ok) throw new Error('Kon stops.json niet laden');
+  stops = await res.json();
+  dataLoaded = true;
+}
+
+async function loadStopSchedule(stopId) {
+  if (scheduleCache[stopId]) return scheduleCache[stopId];
+  const res = await fetch(`../data/schedules/${stopId}.json`);
+  if (!res.ok) return { weekday: [], saturday: [], sunday: [] };
+  scheduleCache[stopId] = await res.json();
+  return scheduleCache[stopId];
+}
+
+const shapeCache = {};
+async function loadShape(shapeId) {
+  if (shapeCache[shapeId]) return shapeCache[shapeId];
+  const res = await fetch(`../data/shapes/${shapeId}.json`);
+  if (!res.ok) return null;
+  shapeCache[shapeId] = await res.json();
+  return shapeCache[shapeId];
+}
+
+// ── Haversine distance (km) ───────────────────────────────────────────────────
+
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 +
+    Math.cos(lat1 * Math.PI/180) * Math.cos(lat2 * Math.PI/180) * Math.sin(dLon/2)**2;
+  return R * 2 * Math.asin(Math.sqrt(a));
+}
+
+function stopTown(stop) {
+  return stop.name.includes(',') ? stop.name.split(',')[0].trim() : stop.name;
+}
+
+function nearestStops(lat, lon, n = 8) {
+  return stops
+    .map(s => ({ ...s, dist: haversine(lat, lon, s.lat, s.lon) }))
+    .sort((a, b) => a.dist - b.dist)
+    .slice(0, n);
+}
+
+// ── Day helpers ───────────────────────────────────────────────────────────────
+
+function todayDayType() {
+  const dow = new Date().getDay(); // 0=sun, 6=sat
+  if (dow === 0) return 'sunday';
+  if (dow === 6) return 'saturday';
+  return 'weekday';
+}
+
+function nowMinutes() {
+  const d = new Date();
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+function timeToMinutes(t) {
+  // GTFS times can exceed 24:00 for trips past midnight
+  const [h, m] = t.split(':').map(Number);
+  return h * 60 + m;
+}
+
+// ── Map ───────────────────────────────────────────────────────────────────────
+
+let map = null;
+let userMarker = null;
+let stopMarkers = [];
+let routePolyline = null;
+
+function clearRoute() {
+  if (routePolyline) { routePolyline.remove(); routePolyline = null; }
+}
+
+function initMap(lat, lon) {
+  if (!map) {
+    map = L.map('map').setView([lat, lon], 15);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      maxZoom: 19
+    }).addTo(map);
+  } else {
+    map.setView([lat, lon], 15);
+  }
+}
+
+function updateMapMarkers(userLat, userLon, nearStops) {
+  // User marker
+  if (userMarker) userMarker.remove();
+  userMarker = L.circleMarker([userLat, userLon], {
+    radius: 9, fillColor: '#1a56db', color: '#fff', weight: 2, fillOpacity: 1
+  }).addTo(map).bindPopup('Jouw locatie');
+
+  // Remove old stop markers
+  stopMarkers.forEach(m => m.remove());
+  stopMarkers = [];
+
+  const busIcon = L.divIcon({
+    html: '🚌',
+    className: '',
+    iconSize: [24, 24],
+    iconAnchor: [12, 12]
+  });
+
+  nearStops.forEach(stop => {
+    const m = L.marker([stop.lat, stop.lon], { icon: busIcon })
+      .addTo(map)
+      .bindPopup(`<strong>${stop.name}</strong><br>${formatDist(stop.dist)} weg`);
+    m.stopId = stop.id;
+    stopMarkers.push(m);
+  });
+}
+
+function formatDist(km) {
+  return km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`;
+}
+
+// ── Stops list UI ─────────────────────────────────────────────────────────────
+
+let selectedStopId = null;
+let selectedStopName = null;
+
+function renderStopsList(nearStops) {
+  const list = document.getElementById('stopsList');
+  list.innerHTML = '';
+  nearStops.forEach(stop => {
+    const li = document.createElement('li');
+    li.className = 'stop-item' + (stop.id === selectedStopId ? ' active' : '');
+    li.dataset.id = stop.id;
+    li.innerHTML = `
+      <span class="stop-name">${stop.name}</span>
+      <span class="stop-dist">${formatDist(stop.dist)}</span>
+    `;
+    li.addEventListener('click', () => selectStop(stop));
+    list.appendChild(li);
+  });
+}
+
+function selectStop(stop) {
+  selectedStopId = stop.id;
+  selectedStopName = stop.name;
+  // Highlight in list
+  document.querySelectorAll('.stop-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.id === stop.id);
+  });
+  // Open popup on map
+  const marker = stopMarkers.find(m => m.stopId === stop.id);
+  if (marker) marker.openPopup();
+  // Show departures — merge all stops sharing this name (both directions)
+  document.getElementById('departuresTitle').textContent = stop.name;
+  document.getElementById('departuresPanel').hidden = false;
+  renderDepartures(stop.name, currentDay());
+}
+
+function currentDay() {
+  const active = document.querySelector('.day-btn.active');
+  const day = active?.dataset.day;
+  return day === 'today' ? todayDayType() : (day || todayDayType());
+}
+
+document.querySelectorAll('.day-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.day-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    if (selectedStopName) renderDepartures(selectedStopName, currentDay());
+  });
+});
+
+// ── Departures rendering ──────────────────────────────────────────────────────
+
+async function renderDepartures(stopName, dayType) {
+  const container = document.getElementById('departuresContent');
+  container.innerHTML = '<p class="empty-msg"><span class="spinner"></span> Laden…</p>';
+  clearRoute();
+
+  const stopIds = stops.filter(s => s.name === stopName).map(s => s.id);
+  const scheds = await Promise.all(stopIds.map(id => loadStopSchedule(id)));
+
+  // Merge and deduplicate
+  const seen = new Set();
+  let deps = [];
+  for (const sched of scheds) {
+    for (const dep of (sched[dayType] ?? [])) {
+      const key = `${dep.time}|${dep.line}|${dep.headsign}`;
+      if (!seen.has(key)) { seen.add(key); deps.push(dep); }
+    }
+  }
+  deps.sort((a, b) => a.time.localeCompare(b.time));
+
+  // For "today" view: filter to upcoming departures only
+  const isToday = document.querySelector('.day-btn.active')?.dataset.day === 'today';
+  if (isToday) {
+    const nowMin = nowMinutes();
+    deps = deps.filter(d => timeToMinutes(d.time) >= nowMin);
+  }
+
+  const dayLabel = dayType === 'weekday' ? 'maandag–vrijdag'
+                 : dayType === 'saturday' ? 'zaterdag' : 'zondag';
+
+  if (deps.length === 0) {
+    container.innerHTML = `<p class="empty-msg">Geen ${isToday ? 'komende' : ''} vertrektijden gevonden voor ${dayLabel}.</p>`;
+    return;
+  }
+
+  // Mark first departure as next
+  const hasShape = deps.some(d => d.shape_id);
+
+  let html = `<table class="dep-table">
+    <thead><tr><th>Tijd</th><th>Lijn</th><th>Richting</th>${hasShape ? '<th></th>' : ''}</tr></thead>
+    <tbody>`;
+  deps.forEach((dep, i) => {
+    const displayTime = dep.time.slice(0, 5);
+    const cls = i === 0 && isToday ? 'next-up' : '';
+    const shapeBtn = dep.shape_id
+      ? `<td><button class="route-btn" data-shape="${escHtml(dep.shape_id)}" title="Toon route op kaart">🗺</button></td>`
+      : (hasShape ? '<td></td>' : '');
+    html += `<tr class="${cls}">
+      <td class="dep-time">${escHtml(displayTime)}</td>
+      <td class="dep-line-col">${escHtml(dep.line)}</td>
+      <td class="dep-dest">${escHtml(dep.headsign)}</td>
+      ${shapeBtn}
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  container.innerHTML = html;
+
+  // Attach route-button click handlers
+  container.querySelectorAll('.route-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const shapeId = btn.dataset.shape;
+      container.querySelectorAll('.route-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      clearRoute();
+      const coords = await loadShape(shapeId);
+      if (coords && map) {
+        routePolyline = L.polyline(coords, {
+          color: '#1a56db', weight: 4, opacity: .85
+        }).addTo(map);
+        map.fitBounds(routePolyline.getBounds(), { padding: [30, 30] });
+      }
+    });
+  });
+}
+
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ── Search / autocomplete ─────────────────────────────────────────────────────
+
+let autocompleteEl = null;
+let currentNearStops = [];
+
+function setupSearch() {
+  const input = document.getElementById('searchInput');
+  const wrapper = input.parentElement;
+  wrapper.style.position = 'relative';
+
+  input.addEventListener('input', () => {
+    const q = input.value.trim().toLowerCase();
+    if (q.length < 2) { hideAutocomplete(); return; }
+    if (!dataLoaded) return;
+
+    // Split query into words and require all words to appear in the stop name
+    const words = q.split(/\s+/).filter(Boolean);
+    const seen = new Set();
+    const matches = stops
+      .filter(s => {
+        const name = s.name.toLowerCase();
+        if (!words.every(w => name.includes(w))) return false;
+        if (seen.has(s.name)) return false;
+        seen.add(s.name);
+        return true;
+      })
+      .slice(0, 12);
+
+    if (matches.length === 0) { hideAutocomplete(); return; }
+    showAutocomplete(matches, input);
+  });
+
+  input.addEventListener('keydown', e => {
+    if (!autocompleteEl) return;
+    const items = autocompleteEl.querySelectorAll('.autocomplete-item');
+    const selected = autocompleteEl.querySelector('.selected');
+    let idx = selected ? [...items].indexOf(selected) : -1;
+    if (e.key === 'ArrowDown') { e.preventDefault(); items[Math.min(idx+1, items.length-1)]?.classList.add('selected'); selected?.classList.remove('selected'); }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); items[Math.max(idx-1, 0)]?.classList.add('selected'); selected?.classList.remove('selected'); }
+    if (e.key === 'Enter' && selected) selected.click();
+    if (e.key === 'Escape') hideAutocomplete();
+  });
+
+  document.addEventListener('click', e => {
+    if (!autocompleteEl?.contains(e.target) && e.target !== input) hideAutocomplete();
+  });
+}
+
+function showAutocomplete(matches, input) {
+  hideAutocomplete();
+  autocompleteEl = document.createElement('ul');
+  autocompleteEl.className = 'autocomplete-list';
+
+  const rect = input.getBoundingClientRect();
+  autocompleteEl.style.cssText = `position:fixed;top:${rect.bottom+4}px;left:${rect.left}px;width:${rect.width}px`;
+
+  matches.forEach(stop => {
+    const li = document.createElement('li');
+    li.className = 'autocomplete-item';
+    li.textContent = stop.name;
+    li.addEventListener('click', () => {
+      document.getElementById('searchInput').value = stop.name;
+      hideAutocomplete();
+      centreOnStop(stop);
+    });
+    autocompleteEl.appendChild(li);
+  });
+  document.body.appendChild(autocompleteEl);
+}
+
+function hideAutocomplete() {
+  autocompleteEl?.remove();
+  autocompleteEl = null;
+}
+
+function centreOnStop(stop) {
+  // Find all stops sharing this name (different directions/platforms) plus their neighbours
+  const sameNameStops = stops.filter(s => s.name === stop.name);
+  const centerLat = sameNameStops.reduce((s, x) => s + x.lat, 0) / sameNameStops.length;
+  const centerLon = sameNameStops.reduce((s, x) => s + x.lon, 0) / sameNameStops.length;
+  const near = nearestStops(centerLat, centerLon, 8);
+  currentNearStops = near;
+  showContent(centerLat, centerLon, near);
+  // Auto-select first stop with this name
+  const first = near.find(s => s.name === stop.name) || near[0];
+  if (first) selectStop(first);
+}
+
+// ── GPS ───────────────────────────────────────────────────────────────────────
+
+function setupGps() {
+  document.getElementById('gpsBtn').addEventListener('click', async () => {
+    if (!dataLoaded) {
+      showStatus('Data wordt geladen, even geduld…', 'info');
+      return;
+    }
+    if (!navigator.geolocation) {
+      showStatus('Geolocatie wordt niet ondersteund door deze browser.', 'error');
+      return;
+    }
+    const btn = document.getElementById('gpsBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Locatie bepalen…';
+    showStatus('<span class="spinner"></span> Locatie wordt bepaald…', 'info');
+
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        btn.disabled = false;
+        btn.textContent = '📍 Gebruik locatie';
+        hideStatus();
+        const { latitude: lat, longitude: lon } = pos.coords;
+        const near = nearestStops(lat, lon, 8);
+        currentNearStops = near;
+        showContent(lat, lon, near);
+        if (near.length) selectStop(near[0]);
+      },
+      err => {
+        btn.disabled = false;
+        btn.textContent = '📍 Gebruik locatie';
+        const msgs = {
+          1: 'Locatietoegang geweigerd. Sta locatietoestemming toe in je browser.',
+          2: 'Locatie kon niet worden bepaald.',
+          3: 'Timeout bij ophalen locatie.'
+        };
+        showStatus(msgs[err.code] || 'Onbekende fout bij locatie.', 'error');
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  });
+}
+
+function showContent(lat, lon, nearStops) {
+  document.getElementById('contentGrid').hidden = false;
+  initMap(lat, lon);
+  updateMapMarkers(lat, lon, nearStops);
+  renderStopsList(nearStops);
+  // Trigger map resize in case the container was hidden
+  setTimeout(() => map?.invalidateSize(), 100);
+}
+
+function showStatus(html, type = '') {
+  const el = document.getElementById('statusMsg');
+  el.innerHTML = html;
+  el.className = 'status-msg' + (type ? ` ${type}` : '');
+  el.hidden = false;
+}
+function hideStatus() {
+  document.getElementById('statusMsg').hidden = true;
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
+async function init() {
+  showStatus('<span class="spinner"></span> Haltegegevens laden…', 'info');
+  try {
+    await loadData();
+    hideStatus();
+    showStatus(`✅ ${stops.length.toLocaleString('nl-NL')} haltes geladen. Druk op 📍 of zoek op naam.`, 'info');
+    setTimeout(hideStatus, 4000);
+  } catch (err) {
+    showStatus(`❌ Fout bij laden data: ${err.message}. Controleer of je de build-stap hebt uitgevoerd (npm run build).`, 'error');
+  }
+  setupSearch();
+  setupGps();
+}
+
+init();

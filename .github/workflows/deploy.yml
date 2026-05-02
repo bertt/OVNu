@@ -1,0 +1,68 @@
+name: OVNu – Build & Deploy naar GitHub Pages
+
+on:
+  # Elke maandag om 04:00 UTC (nieuwe GTFS-data ophalen)
+  schedule:
+    - cron: '0 4 * * 1'
+  # Bij elke push naar main
+  push:
+    branches: [main]
+  # Handmatig starten via Actions-tab
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Voorkom gelijktijdige deploys; lopende run afmaken
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Installeer dependencies
+        run: npm ci
+
+      - name: Genereer GTFS-data
+        run: npm run build
+        # Het build-script downloadt de GTFS-feed (~238 MB) en genereert:
+        #   data/stops.json
+        #   data/schedules/*.json  (~52.000 bestanden)
+        #   data/shapes/*.json     (~9.500 bestanden)
+
+      - name: Bouw deployment-map (_site)
+        run: |
+          mkdir -p _site/src
+          cp src/index.html src/app.js src/style.css _site/src/
+          cp -r data _site/data
+          # Root-redirect zodat de site bereikbaar is op /  (niet alleen op /src/)
+          echo '<!doctype html><meta http-equiv="refresh" content="0;url=src/"><title>OVNu</title>' > _site/index.html
+
+      - name: Configureer GitHub Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy naar GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OVNu – Vertrektijden bus & trein</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>🚏 OVNu</h1>
+    <p class="subtitle">Vertrektijden bus, trein & tram bij de dichtstbijzijnde halte of station</p>
+  </header>
+
+  <main>
+    <!-- Search box -->
+    <div class="search-bar">
+      <input type="text" id="searchInput" placeholder="Zoek halte, station of plaatsnaam…" autocomplete="off" />
+      <button id="gpsBtn" title="Gebruik mijn locatie">📍 Gebruik locatie</button>
+    </div>
+
+    <!-- Status message -->
+    <div id="statusMsg" class="status-msg" hidden></div>
+
+    <!-- Content area: map + stops list -->
+    <div class="content-grid" id="contentGrid" hidden>
+      <div id="map"></div>
+
+      <aside class="stops-panel">
+        <h2>Dichtstbijzijnde haltes & stations</h2>
+        <ul id="stopsList" class="stops-list"></ul>
+      </aside>
+    </div>
+
+    <!-- Departures panel -->
+    <section id="departuresPanel" class="departures-panel" hidden>
+      <div class="departures-header">
+        <h2 id="departuresTitle">Vertrektijden</h2>
+        <div class="day-selector">
+          <button class="day-btn" data-day="weekday">Ma–Vr</button>
+          <button class="day-btn active" data-day="today">Vandaag</button>
+          <button class="day-btn" data-day="saturday">Zaterdag</button>
+          <button class="day-btn" data-day="sunday">Zondag</button>
+        </div>
+      </div>
+
+      <div id="departuresContent" class="departures-content">
+        <p class="empty-msg">Selecteer een halte om vertrektijden te bekijken.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>Data: <a href="https://gtfs.ovapi.nl" target="_blank">OVapi GTFS</a> •
+       Alle NL OV-operators: bus, trein, tram, metro & meer</p>
+  </footer>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="app.js" type="module"></script>
+</body>
+</html>
