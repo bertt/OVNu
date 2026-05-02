@@ -55,9 +55,15 @@ function stopTown(stop) {
 }
 
 function nearestStops(lat, lon, n = 8) {
+  const seen = new Set();
   return stops
     .map(s => ({ ...s, dist: haversine(lat, lon, s.lat, s.lon) }))
     .sort((a, b) => a.dist - b.dist)
+    .filter(s => {
+      if (seen.has(s.name)) return false;
+      seen.add(s.name);
+      return true;
+    })
     .slice(0, n);
 }
 
@@ -206,6 +212,18 @@ async function renderDepartures(stopName, dayType) {
     }
   }
   deps.sort((a, b) => a.time.localeCompare(b.time));
+
+  // Collapse same-trip entries: same line+headsign within 2 min = same bus
+  // passing through adjacent stops with the same name (keep the earliest)
+  const lastSeen = new Map(); // `line|headsign` → last departure in minutes
+  deps = deps.filter(dep => {
+    const key = `${dep.line}|${dep.headsign}`;
+    const timeMin = timeToMinutes(dep.time);
+    const last = lastSeen.get(key);
+    if (last !== undefined && timeMin - last <= 2) return false;
+    lastSeen.set(key, timeMin);
+    return true;
+  });
 
   // For "today" view: filter to upcoming departures only
   const isToday = document.querySelector('.day-btn.active')?.dataset.day === 'today';

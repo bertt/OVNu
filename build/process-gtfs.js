@@ -189,11 +189,13 @@ async function main() {
   });
   log(`  ${rowCount.toLocaleString()} rows processed`);
 
-  // Sort departures by time and deduplicate (same trip can appear via multiple service_ids)
+  // Sort departures by time and deduplicate
+  // Pass 1: exact key dedup (same trip via multiple service_ids)
+  // Pass 2: 2-minute window dedup (same trip represented with slightly different scheduled times)
   for (const sid of Object.keys(schedule)) {
     for (const day of ['weekday','saturday','sunday']) {
       const seen = new Set();
-      schedule[sid][day] = schedule[sid][day]
+      let entries = schedule[sid][day]
         .sort((a, b) => a.time.localeCompare(b.time))
         .filter(d => {
           const key = `${d.time}|${d.line}|${d.headsign}`;
@@ -201,6 +203,20 @@ async function main() {
           seen.add(key);
           return true;
         });
+
+      // Pass 2: collapse same line+headsign within 2 minutes (same physical trip)
+      const lastMin = new Map();
+      entries = entries.filter(d => {
+        const key = `${d.line}|${d.headsign}`;
+        const [h, m] = d.time.split(':').map(Number);
+        const mins = h * 60 + m;
+        const last = lastMin.get(key);
+        if (last !== undefined && mins - last <= 2) return false;
+        lastMin.set(key, mins);
+        return true;
+      });
+
+      schedule[sid][day] = entries;
     }
   }
   log(`Schedule built for ${Object.keys(schedule).length} stops`);
