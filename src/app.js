@@ -130,7 +130,7 @@ function updateMapMarkers(userLat, userLon, nearStops) {
   stopMarkers = [];
 
   const busIcon = L.divIcon({
-    html: '🚌',
+    html: '<span style="font-size:18px;line-height:24px;display:block;text-align:center;font-family:\'Segoe UI Emoji\',\'Apple Color Emoji\',sans-serif;">🚏</span>',
     className: '',
     iconSize: [24, 24],
     iconAnchor: [12, 12]
