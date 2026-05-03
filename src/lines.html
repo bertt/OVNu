@@ -109,7 +109,7 @@
   </header>
 
   <main style="max-width:1100px;margin:0 auto;padding:1.2rem 1rem 2rem">
-    <a href="index.html" class="back-link">← Terug naar vertrekinfo</a>
+    <a href="index" class="back-link">← Terug naar vertrekinfo</a>
 
     <div class="lines-search">
       <input type="text" id="filterInput" placeholder="Filter op lijn, naam of maatschappij…" autocomplete="off" />
@@ -164,7 +164,7 @@
           const icon = ROUTE_TYPE_ICON[route.route_type] ?? '🚌';
           const chip = document.createElement('a');
           chip.className = 'route-chip';
-          chip.href = `route.html?id=${encodeURIComponent(route.id)}&line=${encodeURIComponent(route.short_name)}&agency=${encodeURIComponent(agency.agency_name)}`;
+          chip.href = `route?id=${encodeURIComponent(route.id)}&line=${encodeURIComponent(route.short_name)}&agency=${encodeURIComponent(agency.agency_name)}&type=${route.route_type ?? 3}`;
           chip.title = route.long_name || route.short_name;
           chip.dataset.line = (route.short_name + ' ' + route.long_name).toLowerCase();
           chip.innerHTML = `
