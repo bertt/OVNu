@@ -98,15 +98,15 @@ function clearRoute() {
   if (routePolyline) { routePolyline.remove(); routePolyline = null; }
 }
 
-function initMap(lat, lon) {
+function initMap(lat, lon, zoom = 15) {
   if (!map) {
-    map = L.map('map').setView([lat, lon], 15);
+    map = L.map('map').setView([lat, lon], zoom);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
       maxZoom: 19
     }).addTo(map);
   } else {
-    map.setView([lat, lon], 15);
+    map.setView([lat, lon], zoom);
   }
 }
 
@@ -480,6 +480,11 @@ function hideStatus() {
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 async function init() {
+  // Show map immediately centred on the Netherlands
+  document.getElementById('contentGrid').hidden = false;
+  initMap(52.1, 5.3, 7);
+  setTimeout(() => map?.invalidateSize(), 100);
+
   showStatus('<span class="spinner"></span> Haltegegevens laden…', 'info');
   try {
     await loadData();
