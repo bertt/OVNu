@@ -486,6 +486,17 @@ async function init() {
     hideStatus();
     showStatus(`✅ ${stops.length.toLocaleString('nl-NL')} haltes geladen. Druk op 📍 of zoek op naam.`, 'info');
     setTimeout(hideStatus, 4000);
+
+    // Auto-navigate if ?stop=name is in URL (e.g. when arriving from route.html)
+    const stopParam = new URLSearchParams(location.search).get('stop');
+    if (stopParam) {
+      const match = stops.find(s => s.name === stopParam);
+      if (match) {
+        hideStatus();
+        document.getElementById('searchInput').value = match.name;
+        centreOnStop(match);
+      }
+    }
   } catch (err) {
     showStatus(`❌ Fout bij laden data: ${err.message}. Controleer of je de build-stap hebt uitgevoerd (npm run build).`, 'error');
   }
