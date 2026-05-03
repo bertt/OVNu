@@ -118,12 +118,14 @@ async function main() {
   const agencies = parseSmall('agency.txt');
   log(`${agencies.length} agencies (all NL OV included)`);
   const agencyIds = new Set(agencies.map(a => a.agency_id));
+  const agencyMap = new Map(agencies.map(a => [a.agency_id, a.agency_name]));
 
   // 2. Routes for all agencies
   log('Parsing routes.txt...');
   const allRoutes = parseSmall('routes.txt');
   const routes = allRoutes.filter(r => agencyIds.has(r.agency_id));
   const routeMap = new Map(routes.map(r => [r.route_id, r]));
+  const routeAgency = new Map(routes.map(r => [r.route_id, r.agency_id])); // route_id → agency_id
   log(`${routes.length} routes`);
 
   // 3. Trips for those routes
@@ -162,16 +164,34 @@ async function main() {
   const allStops = parseSmall('stops.txt');
   const stopMap = new Map(allStops.map(s => [s.stop_id, s]));
 
+  // Pick one representative trip per (route_id, direction_id) for route-stop lists
+  const repTripKey = new Map(); // `route_id|direction_id` → trip_id (first seen with calendar)
+  for (const trip of trips) {
+    if (!serviceDay.has(trip.service_id)) continue;
+    const key = `${trip.route_id}|${trip.direction_id ?? '0'}`;
+    if (!repTripKey.has(key)) repTripKey.set(key, trip.trip_id);
+  }
+  const repTripIds = new Set(repTripKey.values());
+  log(`${repTripIds.size} representative trips for route-stop lists`);
+
   // 6. Stream stop_times (too large to load as string)
   log('Streaming stop_times.txt...');
   const usedStopIds = new Set();
   const schedule = {};
+  const repTripStops = new Map(); // trip_id → [[seq, stop_id], ...]
 
   const rowCount = await streamCsv('stop_times.txt', (st) => {
     const trip = tripMap.get(st.trip_id);
     if (!trip) return;
     const route = routeMap.get(trip.route_id);
     if (!route) return;
+
+    // Collect stops for representative trips (all rows, regardless of calendar)
+    if (repTripIds.has(st.trip_id)) {
+      if (!repTripStops.has(st.trip_id)) repTripStops.set(st.trip_id, []);
+      repTripStops.get(st.trip_id).push([parseInt(st.stop_sequence), st.stop_id]);
+    }
+
     const dayTypes = serviceDay.get(trip.service_id);
     if (!dayTypes?.length) return;
 
@@ -183,6 +203,7 @@ async function main() {
       time: st.departure_time,
       line: route.route_short_name,
       headsign: trip.trip_headsign,
+      agency: routeAgency.get(trip.route_id) || '',
       shape_id: trip.shape_id || undefined
     };
     for (const day of dayTypes) schedule[stopId][day].push(entry);
@@ -235,7 +256,33 @@ async function main() {
     .filter(s => !isNaN(s.lat) && !isNaN(s.lon));
   log(`${usedStops.length} stops with coordinates`);
 
-  // 8. Routes list
+  // 8. Lines per agency — grouped, sorted, with route_type for icons
+  const agencyRoutes = new Map(); // agency_id → [{short_name, long_name, route_type}]
+
+  for (const r of routes) {
+    if (!agencyRoutes.has(r.agency_id)) agencyRoutes.set(r.agency_id, []);
+    agencyRoutes.get(r.agency_id).push({
+      id:         r.route_id,
+      short_name: r.route_short_name || '',
+      long_name:  r.route_long_name  || '',
+      route_type: parseInt(r.route_type) || 3
+    });
+  }
+
+  // Sort routes within each agency by short_name (natural numeric sort)
+  const collator = new Intl.Collator('nl', { numeric: true });
+  const linesList = [...agencyRoutes.entries()]
+    .map(([agency_id, rts]) => ({
+      agency_id,
+      agency_name: agencyMap.get(agency_id) || agency_id,
+      routes: rts
+        .filter((r, i, arr) =>            // deduplicate by short_name within agency
+          arr.findIndex(x => x.short_name === r.short_name) === i)
+        .sort((a, b) => collator.compare(a.short_name, b.short_name))
+    }))
+    .sort((a, b) => a.agency_name.localeCompare(b.agency_name, 'nl'));
+
+  // Routes list (kept for backward compat)
   const routesList = routes.map(r => ({
     id: r.route_id,
     short_name: r.route_short_name,
@@ -248,8 +295,13 @@ async function main() {
   const schedDir = join(DATA_DIR, 'schedules');
   mkdirSync(schedDir, { recursive: true });
 
-  writeFileSync(join(DATA_DIR, 'stops.json'),  JSON.stringify(usedStops));
-  writeFileSync(join(DATA_DIR, 'routes.json'), JSON.stringify(routesList));
+  writeFileSync(join(DATA_DIR, 'stops.json'),    JSON.stringify(usedStops));
+  writeFileSync(join(DATA_DIR, 'routes.json'),   JSON.stringify(routesList));
+  writeFileSync(join(DATA_DIR, 'lines.json'),    JSON.stringify(linesList));
+  writeFileSync(join(DATA_DIR, 'agencies.json'), JSON.stringify(
+    agencies.map(a => ({ id: a.agency_id, name: a.agency_name }))
+  ));
+  log(`lines.json: ${linesList.length} agencies`);
 
   // Write one small JSON per stop
   let written = 0;
@@ -294,6 +346,43 @@ async function main() {
     writeFileSync(join(shapesDir, `${shapeId}.json`), JSON.stringify(coords));
   }
   log(`Wrote ${shapePoints.size} shape files to data/shapes/`);
+
+  // 12. Write per-route stop lists (one file per route_id, keyed by direction)
+  log('Writing route-stop files...');
+  const routeStopsDir = join(DATA_DIR, 'route-stops');
+  mkdirSync(routeStopsDir, { recursive: true });
+
+  // Build: route_id → { direction_id → trip_id }
+  const routeDirTrips = new Map();
+  for (const [key, tripId] of repTripKey) {
+    const bar = key.lastIndexOf('|');
+    const routeId = key.slice(0, bar);
+    const dirId   = key.slice(bar + 1);
+    if (!routeDirTrips.has(routeId)) routeDirTrips.set(routeId, {});
+    routeDirTrips.get(routeId)[dirId] = tripId;
+  }
+
+  let routeStopsWritten = 0;
+  for (const [routeId, dirs] of routeDirTrips) {
+    const result = {};
+    for (const [dirId, tripId] of Object.entries(dirs)) {
+      const raw = repTripStops.get(tripId) || [];
+      raw.sort((a, b) => a[0] - b[0]);
+      result[dirId] = raw.map(([, stopId]) => {
+        const s = stopMap.get(stopId);
+        if (!s) return null;
+        return {
+          id: stopId,
+          name: s.stop_name,
+          lat: Math.round(parseFloat(s.stop_lat) * 100000) / 100000,
+          lon: Math.round(parseFloat(s.stop_lon) * 100000) / 100000
+        };
+      }).filter(Boolean);
+    }
+    writeFileSync(join(routeStopsDir, `${routeId}.json`), JSON.stringify(result));
+    routeStopsWritten++;
+  }
+  log(`Wrote ${routeStopsWritten} route-stop files to data/route-stops/`);
 
   const kb = f => (readFileSync(f).length / 1024).toFixed(0) + ' KB';
   log(`stops.json: ${kb(join(DATA_DIR,'stops.json'))}`);

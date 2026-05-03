@@ -12,13 +12,21 @@
 // ── Data loading ──────────────────────────────────────────────────────────────
 
 let stops = [];        // [{id, name, lat, lon, town}]
+let agencyById = {};   // agency_id → agency_name
 let dataLoaded = false;
 const scheduleCache = {}; // stop_id → {weekday:[], saturday:[], sunday:[]}
 
 async function loadData() {
-  const res = await fetch('../data/stops.json');
-  if (!res.ok) throw new Error('Kon stops.json niet laden');
-  stops = await res.json();
+  const [stopsRes, agenciesRes] = await Promise.all([
+    fetch('../data/stops.json'),
+    fetch('../data/agencies.json')
+  ]);
+  if (!stopsRes.ok) throw new Error('Kon stops.json niet laden');
+  stops = await stopsRes.json();
+  if (agenciesRes.ok) {
+    const list = await agenciesRes.json();
+    agencyById = Object.fromEntries(list.map(a => [a.id, a.name]));
+  }
   dataLoaded = true;
 }
 
@@ -244,7 +252,7 @@ async function renderDepartures(stopName, dayType) {
   const hasShape = deps.some(d => d.shape_id);
 
   let html = `<table class="dep-table">
-    <thead><tr><th>Tijd</th><th>Lijn</th><th>Richting</th>${hasShape ? '<th></th>' : ''}</tr></thead>
+    <thead><tr><th>Tijd</th><th>Lijn</th><th>Maatschappij</th><th>Richting</th>${hasShape ? '<th></th>' : ''}</tr></thead>
     <tbody>`;
   deps.forEach((dep, i) => {
     const [h, m] = dep.time.split(':').map(Number);
@@ -254,9 +262,11 @@ async function renderDepartures(stopName, dayType) {
     const shapeBtn = dep.shape_id
       ? `<td><button class="route-btn" data-shape="${escHtml(dep.shape_id)}" title="Toon route op kaart">🗺</button></td>`
       : (hasShape ? '<td></td>' : '');
+    const agencyName = dep.agency ? escHtml(agencyById[dep.agency] || dep.agency) : '';
     html += `<tr class="${cls}">
       <td class="dep-time">${displayTime}</td>
       <td class="dep-line-col">${escHtml(dep.line)}</td>
+      <td class="dep-agency">${agencyName}</td>
       <td class="dep-dest"><button class="dest-btn" data-headsign="${escHtml(dep.headsign)}">${escHtml(dep.headsign)}</button></td>
       ${shapeBtn}
     </tr>`;
