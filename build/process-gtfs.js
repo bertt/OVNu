@@ -145,7 +145,8 @@ async function main() {
   const sixMonthsOn = new Date(today);
   sixMonthsOn.setMonth(sixMonthsOn.getMonth() + 6);
 
-  const serviceDay = new Map(); // service_id → Set<'weekday'|'saturday'|'sunday'>
+  // Count occurrences per day type per service_id.
+  const serviceDayCounts = new Map(); // service_id → {weekday, saturday, sunday}
   for (const row of calDates) {
     if (!serviceIds.has(row.service_id) || row.exception_type !== '1') continue;
     const d = row.date;
@@ -153,10 +154,23 @@ async function main() {
     if (dt < today || dt > sixMonthsOn) continue;
     const dow = dt.getDay();
     const dayType = dow === 0 ? 'sunday' : dow === 6 ? 'saturday' : 'weekday';
-    if (!serviceDay.has(row.service_id)) serviceDay.set(row.service_id, new Set());
-    serviceDay.get(row.service_id).add(dayType);
+    if (!serviceDayCounts.has(row.service_id)) serviceDayCounts.set(row.service_id, { weekday: 0, saturday: 0, sunday: 0 });
+    serviceDayCounts.get(row.service_id)[dayType]++;
   }
-  for (const [k, v] of serviceDay) serviceDay.set(k, [...v]);
+
+  // Classify each service into day buckets.
+  // A service is only classified as 'weekday' if its weekday count strictly exceeds its
+  // sunday count. This prevents holiday-only runs (e.g. Hemelvaartsdag on a Thursday,
+  // Pinkstermaandag on a Monday) from leaking into the normal weekday schedule when the
+  // service is fundamentally a sunday/holiday pattern.
+  const serviceDay = new Map(); // service_id → string[]
+  for (const [serviceId, counts] of serviceDayCounts) {
+    const days = [];
+    if (counts.weekday > 0 && counts.weekday > counts.sunday) days.push('weekday');
+    if (counts.saturday > 0) days.push('saturday');
+    if (counts.sunday > 0) days.push('sunday');
+    if (days.length > 0) serviceDay.set(serviceId, days);
+  }
   log(`  ${serviceDay.size} services classified`);
 
   // 5. Stops lookup
