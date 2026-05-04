@@ -274,3 +274,20 @@ footer {
 }
 footer a { color: var(--blue); text-decoration: none; }
 footer a:hover { text-decoration: underline; }
+
+.feeds-info {
+  margin-top: .4rem;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: .4rem;
+}
+.feed-badge {
+  background: var(--blue-light);
+  color: var(--blue-dark);
+  border: 1px solid #c5d6f8;
+  border-radius: 12px;
+  padding: .15rem .65rem;
+  font-size: .75rem;
+  white-space: nowrap;
+}

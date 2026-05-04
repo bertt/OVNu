@@ -1,13 +1,18 @@
 #!/usr/bin/env node
 /**
- * GTFS data processor for RRReis/Connexxion bus stops in the Netherlands.
- * Downloads the national GTFS feed and extracts relevant schedule data
- * for use in the static client-side bushalte website.
+ * GTFS data processor for public transit stops.
+ * Downloads one or more GTFS feeds (defined in feeds.json) and merges them into
+ * a single set of static data files used by the client-side website.
  *
  * Output files in ../data/:
  *   stops.json         - [{id, name, lat, lon, town}]
  *   routes.json        - [{id, short_name, long_name}]
- *   stop_schedule.json - {stop_id: {weekday:[],saturday:[],sunday:[]}}
+ *   schedules/{id}.json - {weekday:[], saturday:[], sunday:[]}  (per stop)
+ *   shapes/{id}.json    - [[lat,lon],...]                       (per shape)
+ *   route-stops/{id}.json - {direction: [{id,name,lat,lon},...]}
+ *
+ * Stop IDs and shape IDs are prefixed with the feed name (e.g. "nl:12345")
+ * to avoid collisions between feeds.
  */
 
 import { createWriteStream, existsSync, readFileSync, writeFileSync, mkdirSync, createReadStream } from 'fs';
@@ -20,9 +25,7 @@ import { parse as csvParseSync } from 'csv-parse/sync';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR   = join(__dirname, '..', 'data');
-const GTFS_URL   = 'https://gtfs.ovapi.nl/nl/gtfs-nl.zip';
-const GTFS_FILE  = join(__dirname, 'gtfs-nl.zip');
-const EXTRACT_DIR = join(__dirname, 'gtfs-extracted');
+const FEEDS_FILE = join(__dirname, 'feeds.json');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -32,17 +35,18 @@ function log(msg) {
 
 // ── Download ──────────────────────────────────────────────────────────────────
 
-async function download() {
-  if (existsSync(GTFS_FILE)) {
-    log('Using cached gtfs-nl.zip (delete build/gtfs-nl.zip to re-download)');
-    return;
+async function download(feed) {
+  const gtfsFile = join(__dirname, `gtfs-${feed.name}.zip`);
+  if (existsSync(gtfsFile)) {
+    log(`[${feed.name}] Using cached gtfs-${feed.name}.zip (delete to re-download)`);
+    return gtfsFile;
   }
-  log(`Downloading ${GTFS_URL} ...`);
-  const res = await fetch(GTFS_URL);
+  log(`[${feed.name}] Downloading ${feed.url} ...`);
+  const res = await fetch(feed.url);
   if (!res.ok) throw new Error(`Download failed: ${res.status}`);
   const total = parseInt(res.headers.get('content-length') || '0');
   let received = 0;
-  const dest = createWriteStream(GTFS_FILE);
+  const dest = createWriteStream(gtfsFile);
   const reader = res.body.getReader();
   const stream = new ReadableStream({
     async start(controller) {
@@ -57,35 +61,38 @@ async function download() {
   });
   await pipeline(stream, dest);
   process.stdout.write('\n');
-  log('Download complete');
+  log(`[${feed.name}] Download complete`);
+  return gtfsFile;
 }
 
 // ── Extract needed files to disk (avoids string-length limits) ───────────────
 
-const NEEDED = ['agency.txt','routes.txt','trips.txt','stops.txt','stop_times.txt','calendar_dates.txt','shapes.txt'];
+const NEEDED = ['agency.txt','routes.txt','trips.txt','stops.txt','stop_times.txt','calendar.txt','calendar_dates.txt','shapes.txt'];
 
-function extractFiles(zip) {
-  mkdirSync(EXTRACT_DIR, { recursive: true });
+function extractFiles(zip, extractDir) {
+  mkdirSync(extractDir, { recursive: true });
   for (const name of NEEDED) {
-    const dest = join(EXTRACT_DIR, name);
+    const dest = join(extractDir, name);
     if (existsSync(dest)) { log(`  ${name} already extracted`); continue; }
-    log(`  Extracting ${name}...`);
     const entry = zip.getEntry(name);
-    if (!entry) { log(`  WARNING: ${name} not in zip`); continue; }
-    zip.extractEntryTo(entry, EXTRACT_DIR, false, true);
+    if (!entry) { log(`  (${name} not in zip, skipping)`); continue; }
+    log(`  Extracting ${name}...`);
+    zip.extractEntryTo(entry, extractDir, false, true);
   }
 }
 
 // ── Parse small file from disk ────────────────────────────────────────────────
 
-function parseSmall(name) {
-  return csvParseSync(readFileSync(join(EXTRACT_DIR, name), 'utf8'),
+function parseSmall(name, extractDir) {
+  const p = join(extractDir, name);
+  if (!existsSync(p)) return [];
+  return csvParseSync(readFileSync(p, 'utf8'),
     { columns: true, skip_empty_lines: true, trim: true });
 }
 
 // ── Stream a large CSV file row-by-row ───────────────────────────────────────
 
-function streamCsv(name, onRow) {
+function streamCsv(name, extractDir, onRow) {
   return new Promise((resolve, reject) => {
     const parser = csvParse({ columns: true, skip_empty_lines: true, trim: true });
     let count = 0;
@@ -98,58 +105,85 @@ function streamCsv(name, onRow) {
     });
     parser.on('error', reject);
     parser.on('end', () => resolve(count));
-    createReadStream(join(EXTRACT_DIR, name)).pipe(parser);
+    createReadStream(join(extractDir, name)).pipe(parser);
   });
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-async function main() {
-  await download();
+async function processFeed(feed, shared) {
+  const { schedule, usedStopIds, allStopMap, allShapeIds, allRoutesList, allLinesList, allAgencies } = shared;
 
-  log('Opening zip...');
-  const zip = new AdmZip(GTFS_FILE);
+  const gtfsFile  = await download(feed);
+  const extractDir = join(__dirname, `gtfs-extracted-${feed.name}`);
 
-  log('Extracting files to disk...');
-  extractFiles(zip);
+  log(`[${feed.name}] Opening zip...`);
+  const zip = new AdmZip(gtfsFile);
 
-  // 1. Load all agencies (full NL coverage)
-  log('Parsing agency.txt...');
-  const agencies = parseSmall('agency.txt');
-  log(`${agencies.length} agencies (all NL OV included)`);
-  const agencyIds = new Set(agencies.map(a => a.agency_id));
-  const agencyMap = new Map(agencies.map(a => [a.agency_id, a.agency_name]));
+  log(`[${feed.name}] Extracting files...`);
+  extractFiles(zip, extractDir);
 
-  // 2. Routes for all agencies
-  log('Parsing routes.txt...');
-  const allRoutes = parseSmall('routes.txt');
+  // 1. Agencies
+  log(`[${feed.name}] Parsing agency.txt...`);
+  const agencies = parseSmall('agency.txt', extractDir);
+  log(`[${feed.name}] ${agencies.length} agencies`);
+  const agencyIds  = new Set(agencies.map(a => a.agency_id));
+  const agencyMap  = new Map(agencies.map(a => [a.agency_id, a.agency_name]));
+  for (const a of agencies) {
+    allAgencies.set(`${feed.name}:${a.agency_id}`, a.agency_name);
+  }
+
+  // 2. Routes
+  log(`[${feed.name}] Parsing routes.txt...`);
+  const allRoutes = parseSmall('routes.txt', extractDir);
   const routes = allRoutes.filter(r => agencyIds.has(r.agency_id));
-  const routeMap = new Map(routes.map(r => [r.route_id, r]));
-  const routeAgency = new Map(routes.map(r => [r.route_id, r.agency_id])); // route_id → agency_id
-  log(`${routes.length} routes`);
+  const routeMap   = new Map(routes.map(r => [r.route_id, r]));
+  const routeAgency = new Map(routes.map(r => [r.route_id, r.agency_id]));
+  log(`[${feed.name}] ${routes.length} routes`);
 
-  // 3. Trips for those routes
-  log('Parsing trips.txt...');
-  const allTrips = parseSmall('trips.txt');
+  // 3. Trips
+  log(`[${feed.name}] Parsing trips.txt...`);
+  const allTrips = parseSmall('trips.txt', extractDir);
   const trips = allTrips.filter(t => routeMap.has(t.route_id));
-  const tripMap = new Map(trips.map(t => [t.trip_id, t]));
+  const tripMap    = new Map(trips.map(t => [t.trip_id, t]));
   const serviceIds = new Set(trips.map(t => t.service_id));
-  log(`${trips.length} trips, ${serviceIds.size} service_ids`);
+  log(`[${feed.name}] ${trips.length} trips, ${serviceIds.size} service_ids`);
 
-  // 4. Classify each service_id by day-of-week from calendar_dates.txt
-  log('Parsing calendar_dates.txt...');
-  const calDates = parseSmall('calendar_dates.txt');
-  log(`  ${calDates.length.toLocaleString()} rows`);
-
+  // 4. Classify service_ids → day types
+  log(`[${feed.name}] Classifying service days...`);
   const today = new Date();
   const sixMonthsOn = new Date(today);
   sixMonthsOn.setMonth(sixMonthsOn.getMonth() + 6);
 
-  // Count occurrences per day type per service_id.
   const serviceDayCounts = new Map(); // service_id → {weekday, saturday, sunday}
+
+  // 4a. calendar.txt (standard weekly schedule, if present)
+  const calRows = parseSmall('calendar.txt', extractDir);
+  if (calRows.length > 0) {
+    const DOW = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+    for (const row of calRows) {
+      if (!serviceIds.has(row.service_id)) continue;
+      const start = new Date(`${row.start_date.slice(0,4)}-${row.start_date.slice(4,6)}-${row.start_date.slice(6,8)}`);
+      const end   = new Date(`${row.end_date.slice(0,4)}-${row.end_date.slice(4,6)}-${row.end_date.slice(6,8)}`);
+      const lo = start < today ? today : start;
+      const hi = end   > sixMonthsOn ? sixMonthsOn : end;
+      for (let d = new Date(lo); d <= hi; d.setDate(d.getDate() + 1)) {
+        const dow = d.getDay();
+        if (row[DOW[dow]] !== '1') continue;
+        const dayType = dow === 0 ? 'sunday' : dow === 6 ? 'saturday' : 'weekday';
+        if (!serviceDayCounts.has(row.service_id)) serviceDayCounts.set(row.service_id, { weekday: 0, saturday: 0, sunday: 0 });
+        serviceDayCounts.get(row.service_id)[dayType]++;
+      }
+    }
+    log(`[${feed.name}] calendar.txt: ${calRows.length} service rows`);
+  }
+
+  // 4b. calendar_dates.txt (exceptions / sole source)
+  const calDates = parseSmall('calendar_dates.txt', extractDir);
+  log(`[${feed.name}] calendar_dates.txt: ${calDates.length.toLocaleString()} rows`);
   for (const row of calDates) {
     if (!serviceIds.has(row.service_id) || row.exception_type !== '1') continue;
-    const d = row.date;
+    const d  = row.date;
     const dt = new Date(`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`);
     if (dt < today || dt > sixMonthsOn) continue;
     const dow = dt.getDay();
@@ -158,12 +192,10 @@ async function main() {
     serviceDayCounts.get(row.service_id)[dayType]++;
   }
 
-  // Classify each service into day buckets.
-  // A service is only classified as 'weekday' if its weekday count strictly exceeds its
-  // sunday count. This prevents holiday-only runs (e.g. Hemelvaartsdag on a Thursday,
-  // Pinkstermaandag on a Monday) from leaking into the normal weekday schedule when the
-  // service is fundamentally a sunday/holiday pattern.
-  const serviceDay = new Map(); // service_id → string[]
+  // Classify: only mark as 'weekday' if weekday count strictly exceeds sunday count.
+  // Prevents holiday-only runs (e.g. Hemelvaartsdag, Pinkstermaandag) from leaking
+  // into the normal weekday schedule.
+  const serviceDay = new Map();
   for (const [serviceId, counts] of serviceDayCounts) {
     const days = [];
     if (counts.weekday > 0 && counts.weekday > counts.sunday) days.push('weekday');
@@ -171,63 +203,61 @@ async function main() {
     if (counts.sunday > 0) days.push('sunday');
     if (days.length > 0) serviceDay.set(serviceId, days);
   }
-  log(`  ${serviceDay.size} services classified`);
+  log(`[${feed.name}] ${serviceDay.size} services classified`);
 
-  // 5. Stops lookup
-  log('Parsing stops.txt...');
-  const allStops = parseSmall('stops.txt');
-  const stopMap = new Map(allStops.map(s => [s.stop_id, s]));
+  // 5. Stops — build prefixed stop map
+  log(`[${feed.name}] Parsing stops.txt...`);
+  const allStops = parseSmall('stops.txt', extractDir);
+  for (const s of allStops) {
+    allStopMap.set(`${feed.name}:${s.stop_id}`, s);
+  }
 
-  // Pick one representative trip per (route_id, direction_id) for route-stop lists
-  const repTripKey = new Map(); // `route_id|direction_id` → trip_id (first seen with calendar)
+  // Representative trips for route-stop lists
+  const repTripKey = new Map();
   for (const trip of trips) {
     if (!serviceDay.has(trip.service_id)) continue;
     const key = `${trip.route_id}|${trip.direction_id ?? '0'}`;
     if (!repTripKey.has(key)) repTripKey.set(key, trip.trip_id);
   }
-  const repTripIds = new Set(repTripKey.values());
-  log(`${repTripIds.size} representative trips for route-stop lists`);
+  const repTripIds  = new Set(repTripKey.values());
+  const repTripStops = new Map();
+  log(`[${feed.name}] ${repTripIds.size} representative trips`);
 
-  // 6. Stream stop_times (too large to load as string)
-  log('Streaming stop_times.txt...');
-  const usedStopIds = new Set();
-  const schedule = {};
-  const repTripStops = new Map(); // trip_id → [[seq, stop_id], ...]
-
-  const rowCount = await streamCsv('stop_times.txt', (st) => {
+  // 6. Stream stop_times
+  log(`[${feed.name}] Streaming stop_times.txt...`);
+  const rowCount = await streamCsv('stop_times.txt', extractDir, (st) => {
     const trip = tripMap.get(st.trip_id);
     if (!trip) return;
     const route = routeMap.get(trip.route_id);
     if (!route) return;
 
-    // Collect stops for representative trips (all rows, regardless of calendar)
     if (repTripIds.has(st.trip_id)) {
       if (!repTripStops.has(st.trip_id)) repTripStops.set(st.trip_id, []);
-      repTripStops.get(st.trip_id).push([parseInt(st.stop_sequence), st.stop_id]);
+      repTripStops.get(st.trip_id).push([parseInt(st.stop_sequence), `${feed.name}:${st.stop_id}`]);
     }
 
     const dayTypes = serviceDay.get(trip.service_id);
     if (!dayTypes?.length) return;
 
-    const stopId = st.stop_id;
+    const stopId = `${feed.name}:${st.stop_id}`;
     usedStopIds.add(stopId);
     if (!schedule[stopId]) schedule[stopId] = { weekday: [], saturday: [], sunday: [] };
 
+    const shapeId = trip.shape_id ? `${feed.name}:${trip.shape_id}` : undefined;
     const entry = {
-      time: st.departure_time,
-      line: route.route_short_name,
+      time:     st.departure_time,
+      line:     route.route_short_name,
       headsign: trip.trip_headsign,
-      agency: routeAgency.get(trip.route_id) || '',
-      shape_id: trip.shape_id || undefined
+      agency:   routeAgency.get(trip.route_id) || '',
+      shape_id: shapeId
     };
     for (const day of dayTypes) schedule[stopId][day].push(entry);
   });
-  log(`  ${rowCount.toLocaleString()} rows processed`);
+  log(`[${feed.name}] ${rowCount.toLocaleString()} stop_times rows processed`);
 
-  // Sort departures by time and deduplicate
-  // Pass 1: exact key dedup (same trip via multiple service_ids)
-  // Pass 2: 2-minute window dedup (same trip represented with slightly different scheduled times)
+  // 7. Sort + deduplicate per stop
   for (const sid of Object.keys(schedule)) {
+    if (!sid.startsWith(`${feed.name}:`)) continue;
     for (const day of ['weekday','saturday','sunday']) {
       const seen = new Set();
       let entries = schedule[sid][day]
@@ -238,8 +268,6 @@ async function main() {
           seen.add(key);
           return true;
         });
-
-      // Pass 2: collapse same line+headsign within 2 minutes (same physical trip)
       const lastMin = new Map();
       entries = entries.filter(d => {
         const key = `${d.line}|${d.headsign}`;
@@ -250,132 +278,76 @@ async function main() {
         lastMin.set(key, mins);
         return true;
       });
-
       schedule[sid][day] = entries;
     }
   }
-  log(`Schedule built for ${Object.keys(schedule).length} stops`);
 
-  // 7. Used stops list — keep actual boarding stops (location_type 0 or empty)
-  const usedStops = [...usedStopIds]
-    .map(id => stopMap.get(id))
-    .filter(s => s && (s.location_type === '0' || s.location_type === ''))
-    .map(s => ({
-      id: s.stop_id,
-      name: s.stop_name,
-      lat: Math.round(parseFloat(s.stop_lat) * 100000) / 100000,
-      lon: Math.round(parseFloat(s.stop_lon) * 100000) / 100000,
-      town: s.stop_name.includes(',') ? s.stop_name.split(',')[0].trim() : s.stop_name
-    }))
-    .filter(s => !isNaN(s.lat) && !isNaN(s.lon));
-  log(`${usedStops.length} stops with coordinates`);
-
-  // 8. Lines per agency — grouped, sorted, with route_type for icons
-  const agencyRoutes = new Map(); // agency_id → [{short_name, long_name, route_type}]
-
+  // 8. Lines list
+  const agencyRoutes = new Map();
   for (const r of routes) {
     if (!agencyRoutes.has(r.agency_id)) agencyRoutes.set(r.agency_id, []);
     agencyRoutes.get(r.agency_id).push({
-      id:         r.route_id,
+      id:         `${feed.name}:${r.route_id}`,
       short_name: r.route_short_name || '',
       long_name:  r.route_long_name  || '',
       route_type: parseInt(r.route_type) || 3
     });
   }
-
-  // Sort routes within each agency by short_name (natural numeric sort)
   const collator = new Intl.Collator('nl', { numeric: true });
-  const linesList = [...agencyRoutes.entries()]
-    .map(([agency_id, rts]) => ({
-      agency_id,
+  for (const [agency_id, rts] of agencyRoutes) {
+    allLinesList.push({
+      agency_id:   `${feed.name}:${agency_id}`,
       agency_name: agencyMap.get(agency_id) || agency_id,
       routes: rts
-        .filter((r, i, arr) =>            // deduplicate by short_name within agency
-          arr.findIndex(x => x.short_name === r.short_name) === i)
+        .filter((r, i, arr) => arr.findIndex(x => x.short_name === r.short_name) === i)
         .sort((a, b) => collator.compare(a.short_name, b.short_name))
-    }))
-    .sort((a, b) => a.agency_name.localeCompare(b.agency_name, 'nl'));
-
-  // Routes list (kept for backward compat)
-  const routesList = routes.map(r => ({
-    id: r.route_id,
-    short_name: r.route_short_name,
-    long_name: r.route_long_name || ''
-  }));
-
-  // 9. Write output — split schedule into per-stop files for lazy loading
-  log('Writing output files...');
-  mkdirSync(DATA_DIR, { recursive: true });
-  const schedDir = join(DATA_DIR, 'schedules');
-  mkdirSync(schedDir, { recursive: true });
-
-  writeFileSync(join(DATA_DIR, 'stops.json'),    JSON.stringify(usedStops));
-  writeFileSync(join(DATA_DIR, 'routes.json'),   JSON.stringify(routesList));
-  writeFileSync(join(DATA_DIR, 'lines.json'),    JSON.stringify(linesList));
-  writeFileSync(join(DATA_DIR, 'agencies.json'), JSON.stringify(
-    agencies.map(a => ({ id: a.agency_id, name: a.agency_name }))
-  ));
-  log(`lines.json: ${linesList.length} agencies`);
-
-  // Write one small JSON per stop
-  let written = 0;
-  for (const [stopId, daySched] of Object.entries(schedule)) {
-    writeFileSync(join(schedDir, `${stopId}.json`), JSON.stringify(daySched));
-    written++;
+    });
   }
-  log(`Wrote ${written} per-stop schedule files to data/schedules/`);
 
-  // 10. Collect all unique shape_ids referenced in schedules
-  log('Collecting used shape_ids...');
-  const usedShapeIds = new Set();
-  for (const daySched of Object.values(schedule)) {
-    for (const deps of Object.values(daySched)) {
+  // Routes list (backward compat)
+  for (const r of routes) {
+    allRoutesList.push({
+      id:         `${feed.name}:${r.route_id}`,
+      short_name: r.route_short_name,
+      long_name:  r.route_long_name || ''
+    });
+  }
+
+  // 9. Collect shape IDs used in this feed's schedules
+  for (const sid of usedStopIds) {
+    if (!sid.startsWith(`${feed.name}:`)) continue;
+    for (const deps of Object.values(schedule[sid] || {})) {
       for (const dep of deps) {
-        if (dep.shape_id) usedShapeIds.add(dep.shape_id);
+        if (dep.shape_id) allShapeIds.add(dep.shape_id);
       }
     }
   }
-  log(`${usedShapeIds.size} unique shape_ids`);
 
-  // 11. Stream shapes.txt → write per-shape [[lat,lon],...] files
-  log('Streaming shapes.txt...');
-  const shapesDir = join(DATA_DIR, 'shapes');
-  mkdirSync(shapesDir, { recursive: true });
-  const shapePoints = new Map(); // shape_id → [{seq, lat, lon}]
-
-  await streamCsv('shapes.txt', (row) => {
-    if (!usedShapeIds.has(row.shape_id)) return;
-    if (!shapePoints.has(row.shape_id)) shapePoints.set(row.shape_id, []);
-    shapePoints.get(row.shape_id).push([
+  // 10. Stream shapes
+  log(`[${feed.name}] Streaming shapes.txt...`);
+  await streamCsv('shapes.txt', extractDir, (row) => {
+    const shapeId = `${feed.name}:${row.shape_id}`;
+    if (!allShapeIds.has(shapeId)) return;
+    if (!shared.shapePoints.has(shapeId)) shared.shapePoints.set(shapeId, []);
+    shared.shapePoints.get(shapeId).push([
       parseInt(row.shape_pt_sequence),
       Math.round(parseFloat(row.shape_pt_lat) * 100000) / 100000,
       Math.round(parseFloat(row.shape_pt_lon) * 100000) / 100000
     ]);
   });
 
-  log(`Writing ${shapePoints.size} shape files...`);
-  for (const [shapeId, pts] of shapePoints) {
-    pts.sort((a, b) => a[0] - b[0]);
-    const coords = pts.map(p => [p[1], p[2]]);
-    writeFileSync(join(shapesDir, `${shapeId}.json`), JSON.stringify(coords));
-  }
-  log(`Wrote ${shapePoints.size} shape files to data/shapes/`);
-
-  // 12. Write per-route stop lists (one file per route_id, keyed by direction)
-  log('Writing route-stop files...');
+  // 11. Route-stop files
+  log(`[${feed.name}] Writing route-stop files...`);
   const routeStopsDir = join(DATA_DIR, 'route-stops');
   mkdirSync(routeStopsDir, { recursive: true });
-
-  // Build: route_id → { direction_id → trip_id }
   const routeDirTrips = new Map();
   for (const [key, tripId] of repTripKey) {
     const bar = key.lastIndexOf('|');
-    const routeId = key.slice(0, bar);
+    const routeId = `${feed.name}:${key.slice(0, bar)}`;
     const dirId   = key.slice(bar + 1);
     if (!routeDirTrips.has(routeId)) routeDirTrips.set(routeId, {});
     routeDirTrips.get(routeId)[dirId] = tripId;
   }
-
   let routeStopsWritten = 0;
   for (const [routeId, dirs] of routeDirTrips) {
     const result = {};
@@ -383,7 +355,7 @@ async function main() {
       const raw = repTripStops.get(tripId) || [];
       raw.sort((a, b) => a[0] - b[0]);
       result[dirId] = raw.map(([, stopId]) => {
-        const s = stopMap.get(stopId);
+        const s = allStopMap.get(stopId);
         if (!s) return null;
         return {
           id: stopId,
@@ -393,10 +365,112 @@ async function main() {
         };
       }).filter(Boolean);
     }
-    writeFileSync(join(routeStopsDir, `${routeId}.json`), JSON.stringify(result));
+    // routeId = "feed:localId" → write to route-stops/feed/localId.json
+    const colonIdx = routeId.indexOf(':');
+    const feedPart = routeId.slice(0, colonIdx);
+    const localId  = routeId.slice(colonIdx + 1);
+    mkdirSync(join(routeStopsDir, feedPart), { recursive: true });
+    writeFileSync(join(routeStopsDir, feedPart, `${localId}.json`), JSON.stringify(result));
     routeStopsWritten++;
   }
-  log(`Wrote ${routeStopsWritten} route-stop files to data/route-stops/`);
+  log(`[${feed.name}] Wrote ${routeStopsWritten} route-stop files`);
+}
+
+async function main() {
+  const feeds = JSON.parse(readFileSync(FEEDS_FILE, 'utf8'));
+  log(`Processing ${feeds.length} feed(s): ${feeds.map(f => f.name).join(', ')}`);
+
+  // Shared accumulators across all feeds
+  const shared = {
+    schedule:    {},
+    usedStopIds: new Set(),
+    allStopMap:  new Map(),
+    allShapeIds: new Set(),
+    shapePoints: new Map(),
+    allRoutesList: [],
+    allLinesList:  [],
+    allAgencies:   new Map()
+  };
+
+  for (const feed of feeds) {
+    await processFeed(feed, shared);
+  }
+
+  const { schedule, usedStopIds, allStopMap, allShapeIds, shapePoints, allRoutesList, allLinesList, allAgencies } = shared;
+  log(`Schedule built for ${Object.keys(schedule).length} stops across all feeds`);
+
+  // Write output
+  log('Writing output files...');
+  mkdirSync(DATA_DIR, { recursive: true });
+
+  // stops.json
+  const usedStops = [...usedStopIds]
+    .map(id => {
+      const s = allStopMap.get(id);
+      if (!s) return null;
+      const locType = s.location_type ?? '';
+      if (locType !== '0' && locType !== '') return null;
+      const lat = Math.round(parseFloat(s.stop_lat) * 100000) / 100000;
+      const lon = Math.round(parseFloat(s.stop_lon) * 100000) / 100000;
+      if (isNaN(lat) || isNaN(lon)) return null;
+      return {
+        id,
+        name: s.stop_name,
+        lat,
+        lon,
+        town: s.stop_name.includes(',') ? s.stop_name.split(',')[0].trim() : s.stop_name
+      };
+    })
+    .filter(Boolean);
+  log(`${usedStops.length} stops with coordinates`);
+
+  writeFileSync(join(DATA_DIR, 'stops.json'),    JSON.stringify(usedStops));
+  writeFileSync(join(DATA_DIR, 'routes.json'),   JSON.stringify(allRoutesList));
+  writeFileSync(join(DATA_DIR, 'lines.json'),    JSON.stringify(allLinesList));
+  writeFileSync(join(DATA_DIR, 'agencies.json'), JSON.stringify(
+    [...allAgencies.entries()].map(([id, name]) => ({ id, name }))
+  ));
+  log(`lines.json: ${allLinesList.length} agency groups`);
+
+  // feeds-info.json — per-feed stats for the UI
+  const feedsInfo = feeds.map(feed => {
+    const feedStops  = usedStops.filter(s => s.id.startsWith(`${feed.name}:`)).length;
+    const feedRoutes = allLinesList
+      .filter(ag => ag.agency_id.startsWith(`${feed.name}:`))
+      .reduce((sum, ag) => sum + ag.routes.length, 0);
+    return { name: feed.name, label: feed.label || feed.name, routes: feedRoutes, stops: feedStops };
+  });
+  writeFileSync(join(DATA_DIR, 'feeds-info.json'), JSON.stringify(feedsInfo));
+
+  // Per-stop schedule files — split into feed subdirectory to avoid ':' in filenames
+  // (e.g. stop ID "nl:3517780" → data/schedules/nl/3517780.json)
+  const schedDir = join(DATA_DIR, 'schedules');
+  mkdirSync(schedDir, { recursive: true });
+  let written = 0;
+  for (const [stopId, daySched] of Object.entries(schedule)) {
+    const colonIdx = stopId.indexOf(':');
+    const feedName = stopId.slice(0, colonIdx);
+    const localId  = stopId.slice(colonIdx + 1);
+    mkdirSync(join(schedDir, feedName), { recursive: true });
+    writeFileSync(join(schedDir, feedName, `${localId}.json`), JSON.stringify(daySched));
+    written++;
+  }
+  log(`Wrote ${written} per-stop schedule files to data/schedules/`);
+
+  // Shape files — split into feed subdirectory (e.g. "nl:1532954" → data/shapes/nl/1532954.json)
+  log(`Writing ${shapePoints.size} shape files...`);
+  const shapesDir = join(DATA_DIR, 'shapes');
+  mkdirSync(shapesDir, { recursive: true });
+  for (const [shapeId, pts] of shapePoints) {
+    pts.sort((a, b) => a[0] - b[0]);
+    const coords = pts.map(p => [p[1], p[2]]);
+    const colonIdx = shapeId.indexOf(':');
+    const feedName = shapeId.slice(0, colonIdx);
+    const localId  = shapeId.slice(colonIdx + 1);
+    mkdirSync(join(shapesDir, feedName), { recursive: true });
+    writeFileSync(join(shapesDir, feedName, `${localId}.json`), JSON.stringify(coords));
+  }
+  log(`Wrote ${shapePoints.size} shape files to data/shapes/`);
 
   const kb = f => (readFileSync(f).length / 1024).toFixed(0) + ' KB';
   log(`stops.json: ${kb(join(DATA_DIR,'stops.json'))}`);

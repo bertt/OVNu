@@ -1,8 +1,8 @@
 node_modules/
 
 # GTFS download cache en uitgepakte bestanden (groot, regenereer met npm run build)
-build/gtfs-nl.zip
-build/gtfs-extracted/
+build/*.zip
+build/gtfs-extracted*/
 
 # Gegenereerde data — wordt door GitHub Actions opgebouwd
 data/

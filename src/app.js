@@ -17,9 +17,10 @@ let dataLoaded = false;
 const scheduleCache = {}; // stop_id → {weekday:[], saturday:[], sunday:[]}
 
 async function loadData() {
-  const [stopsRes, agenciesRes] = await Promise.all([
+  const [stopsRes, agenciesRes, feedsRes] = await Promise.all([
     fetch('../data/stops.json'),
-    fetch('../data/agencies.json')
+    fetch('../data/agencies.json'),
+    fetch('../data/feeds-info.json')
   ]);
   if (!stopsRes.ok) throw new Error('Kon stops.json niet laden');
   stops = await stopsRes.json();
@@ -27,12 +28,25 @@ async function loadData() {
     const list = await agenciesRes.json();
     agencyById = Object.fromEntries(list.map(a => [a.id, a.name]));
   }
+  if (feedsRes.ok) {
+    const feedsInfo = await feedsRes.json();
+    renderFeedsInfo(feedsInfo);
+  }
   dataLoaded = true;
+}
+
+function renderFeedsInfo(feedsInfo) {
+  const el = document.getElementById('feedsInfo');
+  if (!el) return;
+  el.innerHTML = feedsInfo.map(f =>
+    `<span class="feed-badge">${f.label} · ${f.routes.toLocaleString('nl-NL')} lines · ${f.stops.toLocaleString('nl-NL')} stops</span>`
+  ).join('');
 }
 
 async function loadStopSchedule(stopId) {
   if (scheduleCache[stopId]) return scheduleCache[stopId];
-  const res = await fetch(`../data/schedules/${stopId}.json`);
+  // stopId is "feed:localId" (e.g. "nl:3517780") → path "feed/localId"
+  const res = await fetch(`../data/schedules/${stopId.replace(':', '/')}.json`);
   if (!res.ok) return { weekday: [], saturday: [], sunday: [] };
   scheduleCache[stopId] = await res.json();
   return scheduleCache[stopId];
@@ -41,7 +55,8 @@ async function loadStopSchedule(stopId) {
 const shapeCache = {};
 async function loadShape(shapeId) {
   if (shapeCache[shapeId]) return shapeCache[shapeId];
-  const res = await fetch(`../data/shapes/${shapeId}.json`);
+  // shapeId is "feed:localId" → path "feed/localId"
+  const res = await fetch(`../data/shapes/${shapeId.replace(':', '/')}.json`);
   if (!res.ok) return null;
   shapeCache[shapeId] = await res.json();
   return shapeCache[shapeId];
