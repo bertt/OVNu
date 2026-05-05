@@ -12,25 +12,44 @@
 // ── Data loading ──────────────────────────────────────────────────────────────
 
 let stops = [];        // [{id, name, lat, lon, town}]
-let agencyById = {};   // agency_id → agency_name
+let agencyById = {};       // "feed:rawId" → agency_name
+let agencyByRawId = {};    // "rawId" → {name}
+let routeByLineKey = new Map(); // "rawAgencyId:shortName" → {id, route_type, agency_name}
 let dataLoaded = false;
 const scheduleCache = {}; // stop_id → {weekday:[], saturday:[], sunday:[]}
 
 async function loadData() {
-  const [stopsRes, agenciesRes, feedsRes] = await Promise.all([
+  const [stopsRes, agenciesRes, feedsRes, linesRes] = await Promise.all([
     fetch('../data/stops.json'),
     fetch('../data/agencies.json'),
-    fetch('../data/feeds-info.json')
+    fetch('../data/feeds-info.json'),
+    fetch('../data/lines.json')
   ]);
   if (!stopsRes.ok) throw new Error('Kon stops.json niet laden');
   stops = await stopsRes.json();
   if (agenciesRes.ok) {
     const list = await agenciesRes.json();
     agencyById = Object.fromEntries(list.map(a => [a.id, a.name]));
+    for (const a of list) {
+      const raw = a.id.replace(/^[^:]+:/, '');
+      if (!agencyByRawId[raw]) agencyByRawId[raw] = { name: a.name };
+    }
   }
   if (feedsRes.ok) {
     const feedsInfo = await feedsRes.json();
     renderFeedsInfo(feedsInfo);
+  }
+  if (linesRes.ok) {
+    const agencies = await linesRes.json();
+    for (const ag of agencies) {
+      const rawAgency = ag.agency_id.replace(/^[^:]+:/, '');
+      for (const r of ag.routes) {
+        const key = `${rawAgency}:${r.short_name}`;
+        if (!routeByLineKey.has(key)) {
+          routeByLineKey.set(key, { id: r.id, route_type: r.route_type, agency_name: ag.agency_name });
+        }
+      }
+    }
   }
   dataLoaded = true;
 }
@@ -188,6 +207,10 @@ function renderStopsList(nearStops) {
 function selectStop(stop) {
   selectedStopId = stop.id;
   selectedStopName = stop.name;
+  // Update URL so it's copyable/shareable
+  const url = new URL(location.href);
+  url.searchParams.set('stop', stop.name);
+  history.replaceState(null, '', url.toString());
   // Highlight in list
   document.querySelectorAll('.stop-item').forEach(el => {
     el.classList.toggle('active', el.dataset.id === stop.id);
@@ -277,11 +300,19 @@ async function renderDepartures(stopName, dayType) {
     const shapeBtn = dep.shape_id
       ? `<td><button class="route-btn" data-shape="${escHtml(dep.shape_id)}" title="Toon route op kaart">🗺</button></td>`
       : (hasShape ? '<td></td>' : '');
-    const agencyName = dep.agency ? escHtml(agencyById[dep.agency] || dep.agency) : '';
+    const agInfo = dep.agency ? agencyByRawId[dep.agency] : null;
+    const agencyName = agInfo ? agInfo.name : (dep.agency || '');
+    const routeInfo = routeByLineKey.get(`${dep.agency}:${dep.line}`);
+    const lineLink = routeInfo
+      ? `<a href="route?id=${encodeURIComponent(routeInfo.id)}&line=${encodeURIComponent(dep.line)}&agency=${encodeURIComponent(routeInfo.agency_name)}&type=${routeInfo.route_type}" class="dep-link">${escHtml(dep.line)}</a>`
+      : escHtml(dep.line);
+    const agencyLink = agencyName
+      ? `<a href="lines?agency=${encodeURIComponent(agencyName)}" class="dep-link">${escHtml(agencyName)}</a>`
+      : '';
     html += `<tr class="${cls}">
       <td class="dep-time">${displayTime}</td>
-      <td class="dep-line-col">${escHtml(dep.line)}</td>
-      <td class="dep-agency">${agencyName}</td>
+      <td class="dep-line-col">${lineLink}</td>
+      <td class="dep-agency">${agencyLink}</td>
       <td class="dep-dest"><button class="dest-btn" data-headsign="${escHtml(dep.headsign)}">${escHtml(dep.headsign)}</button></td>
       ${shapeBtn}
     </tr>`;

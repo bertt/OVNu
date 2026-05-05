@@ -170,7 +170,7 @@
         const li = document.createElement('li');
         li.className = 'stop-line-item';
         li.innerHTML = `<span class="stop-dot"></span>
-          <a class="stop-link" href="index?stop=${encodeURIComponent(stop.name)}"
+          <a class="stop-link" href="./?stop=${encodeURIComponent(stop.name)}"
              title="Bekijk vertrektijden">${escHtml(stop.name)}</a>`;
         li.addEventListener('click', e => {
           if (e.target.tagName !== 'A') {

@@ -203,6 +203,8 @@ main {
 .dep-line-col { color: var(--blue); font-weight: 700; white-space: nowrap; }
 .dep-agency   { font-size: .78rem; color: var(--gray-700); white-space: nowrap; }
 .dep-dest     { color: var(--gray-900); }
+.dep-link     { color: inherit; text-decoration: none; }
+.dep-link:hover { text-decoration: underline; }
 
 .dest-btn {
   background: none;

@@ -109,7 +109,7 @@
   </header>
 
   <main style="max-width:1100px;margin:0 auto;padding:1.2rem 1rem 2rem">
-    <a href="index" class="back-link">← Terug naar vertrekinfo</a>
+    <a href="./" class="back-link">← Terug naar vertrekinfo</a>
 
     <div class="lines-search">
       <input type="text" id="filterInput" placeholder="Filter op lijn, naam of maatschappij…" autocomplete="off" />
@@ -185,6 +185,16 @@
         .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
+    function applyAgency(name) {
+      const q = name.toLowerCase();
+      document.querySelectorAll('.agency-section').forEach(section => {
+        section.hidden = section.dataset.agency !== q;
+        section.querySelectorAll('.route-chip').forEach(c => c.hidden = false);
+      });
+      document.getElementById('noResults').hidden =
+        document.querySelectorAll('.agency-section:not([hidden])').length > 0;
+    }
+
     function applyFilter(q) {
       const sections = document.querySelectorAll('.agency-section');
       let anyVisible = false;
@@ -213,8 +223,31 @@
       const agencies = await load();
       render(agencies);
 
-      document.getElementById('filterInput').addEventListener('input', e => {
-        applyFilter(e.target.value.trim().toLowerCase());
+      const params = new URLSearchParams(location.search);
+      const filterInput = document.getElementById('filterInput');
+
+      // ?agency=NS: show only that agency, update heading
+      const agencyParam = params.get('agency');
+      if (agencyParam) {
+        document.querySelector('.subtitle').textContent =
+          `Lijnen van ${agencyParam}`;
+        applyAgency(agencyParam);
+      }
+
+      // ?filter=...: pre-fill text filter
+      const filterParam = params.get('filter');
+      if (filterParam && !agencyParam) {
+        filterInput.value = filterParam;
+        applyFilter(filterParam.toLowerCase());
+      }
+
+      filterInput.addEventListener('input', e => {
+        const q = e.target.value.trim().toLowerCase();
+        applyFilter(q);
+        const url = new URL(location.href);
+        if (q) url.searchParams.set('filter', e.target.value.trim());
+        else url.searchParams.delete('filter');
+        history.replaceState(null, '', url.toString());
       });
     } catch (err) {
       document.getElementById('agencyList').innerHTML =
