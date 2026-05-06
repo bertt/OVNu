@@ -14,16 +14,14 @@
 let stops = [];        // [{id, name, lat, lon, town}]
 let agencyById = {};       // "feed:rawId" → agency_name
 let agencyByRawId = {};    // "rawId" → {name}
-let routeByLineKey = new Map(); // "rawAgencyId:shortName" → {id, route_type, agency_name}
 let dataLoaded = false;
 const scheduleCache = {}; // stop_id → {weekday:[], saturday:[], sunday:[]}
 
 async function loadData() {
-  const [stopsRes, agenciesRes, feedsRes, linesRes] = await Promise.all([
+  const [stopsRes, agenciesRes, feedsRes] = await Promise.all([
     fetch('../data/stops.json'),
     fetch('../data/agencies.json'),
-    fetch('../data/feeds-info.json'),
-    fetch('../data/lines.json')
+    fetch('../data/feeds-info.json')
   ]);
   if (!stopsRes.ok) throw new Error('Kon stops.json niet laden');
   stops = await stopsRes.json();
@@ -38,18 +36,6 @@ async function loadData() {
   if (feedsRes.ok) {
     const feedsInfo = await feedsRes.json();
     renderFeedsInfo(feedsInfo);
-  }
-  if (linesRes.ok) {
-    const agencies = await linesRes.json();
-    for (const ag of agencies) {
-      const rawAgency = ag.agency_id.replace(/^[^:]+:/, '');
-      for (const r of ag.routes) {
-        const key = `${rawAgency}:${r.short_name}`;
-        if (!routeByLineKey.has(key)) {
-          routeByLineKey.set(key, { id: r.id, route_type: r.route_type, agency_name: ag.agency_name });
-        }
-      }
-    }
   }
   dataLoaded = true;
 }
@@ -69,16 +55,6 @@ async function loadStopSchedule(stopId) {
   if (!res.ok) return { weekday: [], saturday: [], sunday: [] };
   scheduleCache[stopId] = await res.json();
   return scheduleCache[stopId];
-}
-
-const shapeCache = {};
-async function loadShape(shapeId) {
-  if (shapeCache[shapeId]) return shapeCache[shapeId];
-  // shapeId is "feed:localId" → path "feed/localId"
-  const res = await fetch(`../data/shapes/${shapeId.replace(':', '/')}.json`);
-  if (!res.ok) return null;
-  shapeCache[shapeId] = await res.json();
-  return shapeCache[shapeId];
 }
 
 // ── Haversine distance (km) ───────────────────────────────────────────────────
@@ -134,11 +110,6 @@ function timeToMinutes(t) {
 let map = null;
 let userMarker = null;
 let stopMarkers = [];
-let routePolyline = null;
-
-function clearRoute() {
-  if (routePolyline) { routePolyline.remove(); routePolyline = null; }
-}
 
 function initMap(lat, lon, zoom = 15) {
   if (!map) {
@@ -243,7 +214,6 @@ document.querySelectorAll('.day-btn').forEach(btn => {
 async function renderDepartures(stopName, dayType) {
   const container = document.getElementById('departuresContent');
   container.innerHTML = '<p class="empty-msg"><span class="spinner"></span> Laden…</p>';
-  clearRoute();
 
   const stopIds = stops.filter(s => s.name === stopName).map(s => s.id);
   const scheds = await Promise.all(stopIds.map(id => loadStopSchedule(id)));
@@ -287,24 +257,19 @@ async function renderDepartures(stopName, dayType) {
   }
 
   // Mark first departure as next
-  const hasShape = deps.some(d => d.shape_id);
 
   let html = `<table class="dep-table">
-    <thead><tr><th>Tijd</th><th>Lijn</th><th>Maatschappij</th><th>Richting</th>${hasShape ? '<th></th>' : ''}</tr></thead>
+    <thead><tr><th>Tijd</th><th>Lijn</th><th>Maatschappij</th><th>Richting</th></tr></thead>
     <tbody>`;
   deps.forEach((dep, i) => {
     const [h, m] = dep.time.split(':').map(Number);
     const overnight = h >= 24;
     const displayTime = `${String(h % 24).padStart(2, '0')}:${String(m).padStart(2, '0')}${overnight ? '<span class="overnight" title="Volgende dag">+1</span>' : ''}`;
     const cls = i === 0 && isToday ? 'next-up' : '';
-    const shapeBtn = dep.shape_id
-      ? `<td><button class="route-btn" data-shape="${escHtml(dep.shape_id)}" title="Toon route op kaart">🗺</button></td>`
-      : (hasShape ? '<td></td>' : '');
     const agInfo = dep.agency ? agencyByRawId[dep.agency] : null;
     const agencyName = agInfo ? agInfo.name : (dep.agency || '');
-    const routeInfo = routeByLineKey.get(`${dep.agency}:${dep.line}`);
-    const lineLink = routeInfo
-      ? `<a href="route?id=${encodeURIComponent(routeInfo.id)}&line=${encodeURIComponent(dep.line)}&agency=${encodeURIComponent(routeInfo.agency_name)}&type=${routeInfo.route_type}" class="dep-link">${escHtml(dep.line)}</a>`
+    const lineLink = dep.route_id
+      ? `<a href="route?id=${encodeURIComponent(dep.route_id)}&line=${encodeURIComponent(dep.line)}&agency=${encodeURIComponent(agencyName)}&type=3" class="dep-link">${escHtml(dep.line)}</a>`
       : escHtml(dep.line);
     const agencyLink = agencyName
       ? `<a href="lines?agency=${encodeURIComponent(agencyName)}" class="dep-link">${escHtml(agencyName)}</a>`
@@ -313,59 +278,11 @@ async function renderDepartures(stopName, dayType) {
       <td class="dep-time">${displayTime}</td>
       <td class="dep-line-col">${lineLink}</td>
       <td class="dep-agency">${agencyLink}</td>
-      <td class="dep-dest"><button class="dest-btn" data-headsign="${escHtml(dep.headsign)}">${escHtml(dep.headsign)}</button></td>
-      ${shapeBtn}
+      <td class="dep-dest">${escHtml(dep.headsign)}</td>
     </tr>`;
   });
   html += '</tbody></table>';
   container.innerHTML = html;
-
-  // Attach route-button click handlers
-  container.querySelectorAll('.route-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const shapeId = btn.dataset.shape;
-      container.querySelectorAll('.route-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      clearRoute();
-      const coords = await loadShape(shapeId);
-      if (coords && map) {
-        routePolyline = L.polyline(coords, {
-          color: '#1a56db', weight: 4, opacity: .85
-        }).addTo(map);
-        map.fitBounds(routePolyline.getBounds(), { padding: [30, 30] });
-      }
-    });
-  });
-
-  // Attach destination click handlers — navigate to the terminus stop
-  container.querySelectorAll('.dest-btn').forEach(btn => {
-    btn.addEventListener('click', () => navigateToHeadsign(btn.dataset.headsign));
-  });
-
-}
-
-function navigateToHeadsign(headsign) {
-  if (!dataLoaded) return;
-  const words = headsign.toLowerCase().split(/\s+/).filter(Boolean);
-  const longWords = words.filter(w => w.length > 2);
-  const searchWords = longWords.length > 0 ? longWords : words;
-
-  const seen = new Set();
-  const matches = stops.filter(s => {
-    const name = s.name.toLowerCase();
-    if (!searchWords.every(w => name.includes(w))) return false;
-    if (seen.has(s.name)) return false;
-    seen.add(s.name);
-    return true;
-  });
-
-  if (matches.length === 0) {
-    showStatus(`Geen halte gevonden voor "${headsign}".`, '');
-    setTimeout(hideStatus, 3000);
-    return;
-  }
-  document.getElementById('searchInput').value = matches[0].name;
-  centreOnStop(matches[0]);
 }
 
 function escHtml(str) {

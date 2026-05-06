@@ -112,7 +112,7 @@ function streamCsv(name, extractDir, onRow) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function processFeed(feed, shared) {
-  const { schedule, usedStopIds, allStopMap, allShapeIds, allRoutesList, allLinesList, allAgencies } = shared;
+  const { schedule, usedStopIds, allStopMap, allRoutesList, allLinesList, allAgencies } = shared;
 
   const gtfsFile  = await download(feed);
   const extractDir = join(__dirname, `gtfs-extracted-${feed.name}`);
@@ -243,13 +243,12 @@ async function processFeed(feed, shared) {
     usedStopIds.add(stopId);
     if (!schedule[stopId]) schedule[stopId] = { weekday: [], saturday: [], sunday: [] };
 
-    const shapeId = trip.shape_id ? `${feed.name}:${trip.shape_id}` : undefined;
     const entry = {
       time:     st.departure_time,
       line:     route.route_short_name,
       headsign: trip.trip_headsign,
       agency:   routeAgency.get(trip.route_id) || '',
-      shape_id: shapeId
+      route_id: `${feed.name}:${trip.route_id}`
     };
     for (const day of dayTypes) schedule[stopId][day].push(entry);
   });
@@ -313,30 +312,7 @@ async function processFeed(feed, shared) {
     });
   }
 
-  // 9. Collect shape IDs used in this feed's schedules
-  for (const sid of usedStopIds) {
-    if (!sid.startsWith(`${feed.name}:`)) continue;
-    for (const deps of Object.values(schedule[sid] || {})) {
-      for (const dep of deps) {
-        if (dep.shape_id) allShapeIds.add(dep.shape_id);
-      }
-    }
-  }
-
-  // 10. Stream shapes
-  log(`[${feed.name}] Streaming shapes.txt...`);
-  await streamCsv('shapes.txt', extractDir, (row) => {
-    const shapeId = `${feed.name}:${row.shape_id}`;
-    if (!allShapeIds.has(shapeId)) return;
-    if (!shared.shapePoints.has(shapeId)) shared.shapePoints.set(shapeId, []);
-    shared.shapePoints.get(shapeId).push([
-      parseInt(row.shape_pt_sequence),
-      Math.round(parseFloat(row.shape_pt_lat) * 100000) / 100000,
-      Math.round(parseFloat(row.shape_pt_lon) * 100000) / 100000
-    ]);
-  });
-
-  // 11. Route-stop files
+  // 9. Route-stop files
   log(`[${feed.name}] Writing route-stop files...`);
   const routeStopsDir = join(DATA_DIR, 'route-stops');
   mkdirSync(routeStopsDir, { recursive: true });
@@ -385,8 +361,6 @@ async function main() {
     schedule:    {},
     usedStopIds: new Set(),
     allStopMap:  new Map(),
-    allShapeIds: new Set(),
-    shapePoints: new Map(),
     allRoutesList: [],
     allLinesList:  [],
     allAgencies:   new Map()
@@ -396,7 +370,7 @@ async function main() {
     await processFeed(feed, shared);
   }
 
-  const { schedule, usedStopIds, allStopMap, allShapeIds, shapePoints, allRoutesList, allLinesList, allAgencies } = shared;
+  const { schedule, usedStopIds, allStopMap, allRoutesList, allLinesList, allAgencies } = shared;
   log(`Schedule built for ${Object.keys(schedule).length} stops across all feeds`);
 
   // Write output
@@ -456,21 +430,6 @@ async function main() {
     written++;
   }
   log(`Wrote ${written} per-stop schedule files to data/schedules/`);
-
-  // Shape files — split into feed subdirectory (e.g. "nl:1532954" → data/shapes/nl/1532954.json)
-  log(`Writing ${shapePoints.size} shape files...`);
-  const shapesDir = join(DATA_DIR, 'shapes');
-  mkdirSync(shapesDir, { recursive: true });
-  for (const [shapeId, pts] of shapePoints) {
-    pts.sort((a, b) => a[0] - b[0]);
-    const coords = pts.map(p => [p[1], p[2]]);
-    const colonIdx = shapeId.indexOf(':');
-    const feedName = shapeId.slice(0, colonIdx);
-    const localId  = shapeId.slice(colonIdx + 1);
-    mkdirSync(join(shapesDir, feedName), { recursive: true });
-    writeFileSync(join(shapesDir, feedName, `${localId}.json`), JSON.stringify(coords));
-  }
-  log(`Wrote ${shapePoints.size} shape files to data/shapes/`);
 
   const kb = f => (readFileSync(f).length / 1024).toFixed(0) + ' KB';
   log(`stops.json: ${kb(join(DATA_DIR,'stops.json'))}`);
