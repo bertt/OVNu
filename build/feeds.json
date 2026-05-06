@@ -3,10 +3,5 @@
     "name": "nl",
     "label": "🇳🇱 Netherlands (OVapi)",
     "url": "https://gtfs.ovapi.nl/nl/gtfs-nl.zip"
-  },
-  {
-    "name": "be-delijn",
-    "label": "🇧🇪 Belgium – De Lijn",
-    "url": "https://data.gtfs.be/delijn/gtfs/be-delijn-gtfs.zip"
   }
 ]
