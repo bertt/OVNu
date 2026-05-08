@@ -212,18 +212,25 @@ async function processFeed(feed, shared) {
     allStopMap.set(`${feed.name}:${s.stop_id}`, s);
   }
 
-  // Representative trips for route-stop lists
-  const repTripKey = new Map();
+  // Representative trips for route-stop lists.
+  // Strategy: collect ALL valid trips as candidates per (route, direction).
+  // Pass 1 counts the max stop_sequence per candidate trip (cheap: one integer per trip).
+  // After pass 1 we select the trip with the most stops per direction as the representative.
+  // Pass 2 (lightweight) then collects the full stop sequence only for those selected trips.
+  const repTripCandidates = new Map(); // "route_id|dir" → Set<trip_id>
+  const candidateTripIds  = new Set(); // all valid trip_ids for candidates
+
   for (const trip of trips) {
     if (!serviceDay.has(trip.service_id)) continue;
     const key = `${trip.route_id}|${trip.direction_id ?? '0'}`;
-    if (!repTripKey.has(key)) repTripKey.set(key, trip.trip_id);
+    if (!repTripCandidates.has(key)) repTripCandidates.set(key, new Set());
+    repTripCandidates.get(key).add(trip.trip_id);
+    candidateTripIds.add(trip.trip_id);
   }
-  const repTripIds  = new Set(repTripKey.values());
-  const repTripStops = new Map();
-  log(`[${feed.name}] ${repTripIds.size} representative trips`);
+  log(`[${feed.name}] ${candidateTripIds.size} candidate trips for route-stop selection`);
 
-  // 6. Stream stop_times
+  // 6. Stream stop_times — build schedules AND count max stop_sequence per candidate trip
+  const candidateMaxSeq = new Map(); // trip_id → highest stop_sequence seen
   log(`[${feed.name}] Streaming stop_times.txt...`);
   const rowCount = await streamCsv('stop_times.txt', extractDir, (st) => {
     const trip = tripMap.get(st.trip_id);
@@ -231,13 +238,19 @@ async function processFeed(feed, shared) {
     const route = routeMap.get(trip.route_id);
     if (!route) return;
 
-    if (repTripIds.has(st.trip_id)) {
-      if (!repTripStops.has(st.trip_id)) repTripStops.set(st.trip_id, []);
-      repTripStops.get(st.trip_id).push([parseInt(st.stop_sequence), `${feed.name}:${st.stop_id}`]);
+    // Track the highest stop_sequence per candidate to find the longest trip later.
+    if (candidateTripIds.has(st.trip_id)) {
+      const seq = parseInt(st.stop_sequence);
+      const cur = candidateMaxSeq.get(st.trip_id) || 0;
+      if (seq > cur) candidateMaxSeq.set(st.trip_id, seq);
     }
 
     const dayTypes = serviceDay.get(trip.service_id);
     if (!dayTypes?.length) return;
+
+    // Skip stops where boarding is not allowed (drop-off only / terminus arrivals).
+    // pickup_type=1 means "No pickup available" per the GTFS spec — these are not departures.
+    if (st.pickup_type === '1') return;
 
     const stopId = `${feed.name}:${st.stop_id}`;
     usedStopIds.add(stopId);
@@ -253,6 +266,28 @@ async function processFeed(feed, shared) {
     for (const day of dayTypes) schedule[stopId][day].push(entry);
   });
   log(`[${feed.name}] ${rowCount.toLocaleString()} stop_times rows processed`);
+
+  // Select the representative per direction: the trip with the most stops.
+  const repTripKey = new Map(); // "route_id|dir" → best trip_id
+  for (const [key, candidates] of repTripCandidates) {
+    let bestTrip = null, bestCount = -1;
+    for (const tid of candidates) {
+      const count = candidateMaxSeq.get(tid) || 0;
+      if (count > bestCount) { bestCount = count; bestTrip = tid; }
+    }
+    if (bestTrip) repTripKey.set(key, bestTrip);
+  }
+  const repTripIds   = new Set(repTripKey.values());
+  const repTripStops = new Map();
+  log(`[${feed.name}] ${repTripKey.size} representative trips selected (most stops per direction)`);
+
+  // Pass 2 (lightweight): collect full stop sequences only for the selected representatives.
+  log(`[${feed.name}] Collecting stop sequences for representative trips...`);
+  await streamCsv('stop_times.txt', extractDir, (st) => {
+    if (!repTripIds.has(st.trip_id)) return;
+    if (!repTripStops.has(st.trip_id)) repTripStops.set(st.trip_id, []);
+    repTripStops.get(st.trip_id).push([parseInt(st.stop_sequence), `${feed.name}:${st.stop_id}`]);
+  });
 
   // 7. Sort + deduplicate per stop
   for (const sid of Object.keys(schedule)) {
