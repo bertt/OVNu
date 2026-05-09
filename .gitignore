@@ -9,3 +9,5 @@ data/
 
 # Deployment artifact
 _site/
+
+*.txt

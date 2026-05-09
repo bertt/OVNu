@@ -126,28 +126,25 @@
         if (dates.includes(dateStr)) activeSids.add(sid);
       }
 
-      const trips = (tripsData.trips || []).filter(t => activeSids.has(t.sid));
+      let trips = (tripsData.trips || []).filter(t => activeSids.has(t.sid));
+
+      // For today: only show upcoming trips
+      if (isToday) trips = trips.filter(t => timeToMinutes(t.departure) >= nowMin);
 
       document.getElementById('tripsCount').textContent =
         `${trips.length} rit${trips.length !== 1 ? 'ten' : ''}`;
 
       if (trips.length === 0) {
         document.getElementById('tripsContent').innerHTML =
-          `<p class="empty-msg">Geen ritten gevonden voor deze datum.</p>`;
+          `<p class="empty-msg">Geen ritten meer vandaag.</p>`;
         return;
       }
-
-      // For today: mark first upcoming trip; for other dates: mark first trip
-      const nextIdx = isToday
-        ? trips.findIndex(t => timeToMinutes(t.departure) >= nowMin)
-        : 0;
 
       let html = `<table class="dep-table">
         <thead><tr><th>Vertrektijd</th><th>Richting</th></tr></thead>
         <tbody>`;
       trips.forEach((trip, i) => {
-        const isPast = isToday && timeToMinutes(trip.departure) < nowMin;
-        const cls = i === nextIdx && nextIdx >= 0 ? 'next-up' : (isPast ? 'past' : '');
+        const cls = i === 0 ? 'next-up' : '';
         html += `<tr class="${cls}">
           <td class="dep-time">${formatTime(trip.departure)}</td>
           <td>${escHtml(trip.headsign)}</td>
