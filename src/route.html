@@ -3,15 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>OVNu – Lijn</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="style.css?v=5" />
+  <title>OVNu – Route</title>
+  <link rel="stylesheet" href="style.css?v=7" />
   <style>
     .route-header {
       display: flex;
       align-items: center;
       gap: .75rem;
-      margin-bottom: 1rem;
+      margin-bottom: 1.2rem;
       flex-wrap: wrap;
     }
     .route-badge {
@@ -23,67 +22,22 @@
       border-radius: var(--radius);
       white-space: nowrap;
     }
-    .route-meta { line-height: 1.4; }
+    .route-meta { line-height: 1.6; }
     .route-meta strong { font-size: 1rem; }
-    .route-meta small { color: var(--gray-700); font-size: .82rem; display: block; }
+    .route-meta small { color: var(--gray-700); font-size: .85rem; display: block; }
 
-    .dir-tabs { display: flex; gap: .4rem; margin-bottom: 1rem; }
-    .dir-tab {
-      padding: .35rem .8rem;
-      border: 1.5px solid var(--gray-200);
-      border-radius: 20px;
-      background: #fff;
-      font-size: .85rem;
-      cursor: pointer;
-      transition: all .15s;
-    }
-    .dir-tab.active { background: var(--blue); border-color: var(--blue); color: #fff; }
-
-    .layout { display: grid; grid-template-columns: 280px 1fr; gap: 1rem; align-items: start; }
-    @media (max-width: 680px) { .layout { grid-template-columns: 1fr; } }
-
-    #routeMap { height: 420px; border-radius: var(--radius); box-shadow: var(--shadow); background: var(--gray-200); }
-
-    .stops-panel {
-      background: #fff;
+    .date-display {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--blue-dark);
+      background: var(--blue-light);
+      border: 1px solid #c5d6f8;
       border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      padding: .8rem;
-      max-height: 420px;
-      overflow-y: auto;
+      padding: .55rem 1rem;
+      margin-bottom: 1rem;
     }
-    .stops-panel h3 { font-size: .85rem; color: var(--gray-700); margin-bottom: .5rem; }
 
-    .stop-line-list { list-style: none; display: flex; flex-direction: column; }
-    .stop-line-item {
-      display: flex;
-      align-items: center;
-      gap: .5rem;
-      padding: .3rem .4rem;
-      border-left: 3px solid var(--gray-200);
-      position: relative;
-      cursor: pointer;
-    }
-    .stop-line-item:first-child { border-radius: 3px 0 0 0; }
-    .stop-line-item:hover { background: var(--blue-light); border-left-color: var(--blue); }
-    .stop-dot {
-      width: 10px; height: 10px;
-      border-radius: 50%;
-      background: var(--blue);
-      flex-shrink: 0;
-      margin-left: -6px;
-      border: 2px solid #fff;
-      box-shadow: 0 0 0 2px var(--blue);
-    }
-    .stop-line-item:first-child .stop-dot,
-    .stop-line-item:last-child  .stop-dot { background: var(--blue-dark); }
-    .stop-link {
-      font-size: .85rem;
-      color: var(--gray-900);
-      text-decoration: none;
-      flex: 1;
-    }
-    .stop-link:hover { color: var(--blue); text-decoration: underline; }
+    .trips-count { font-size: .85rem; color: var(--gray-700); margin-bottom: .5rem; }
 
     .back-link {
       display: inline-flex; align-items: center; gap: .3rem;
@@ -100,24 +54,19 @@
         <h1>🚏 OVNu</h1>
         <p class="subtitle">Vertrektijden bus, trein & tram</p>
       </div>
-      <a href="lines" style="color:#fff;opacity:.9;font-size:.85rem;text-decoration:none;white-space:nowrap;border:1px solid rgba(255,255,255,.5);padding:.3rem .75rem;border-radius:20px">📋 Alle lijnen</a>
+      <a href="routes" style="color:#fff;opacity:.9;font-size:.85rem;text-decoration:none;white-space:nowrap;border:1px solid rgba(255,255,255,.5);padding:.3rem .75rem;border-radius:20px">📋 Alle routes</a>
     </div>
   </header>
 
-  <main style="max-width:1100px;margin:0 auto;padding:1.2rem 1rem 2rem">
-    <a href="lines" class="back-link">← Terug naar alle lijnen</a>
+  <main style="max-width:800px;margin:0 auto;padding:1.2rem 1rem 2rem">
+    <a href="./" class="back-link">← Terug</a>
 
     <div id="routeHeader" class="route-header"></div>
-    <div id="dirTabs" class="dir-tabs" hidden></div>
 
-    <div class="layout">
-      <div class="stops-panel">
-        <h3 id="stopCount"></h3>
-        <ul id="stopList" class="stop-line-list"></ul>
-      </div>
-      <div id="routeMap"></div>
-    </div>
+    <div id="dateDisplay" class="date-display"></div>
 
+    <p id="tripsCount" class="trips-count"></p>
+    <div id="tripsContent"></div>
     <div id="errorMsg" class="error-msg" hidden></div>
   </main>
 
@@ -126,137 +75,117 @@
        Alle NL OV-operators: bus, trein, tram, metro & meer</p>
   </footer>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script type="module">
     const ROUTE_TYPE_ICON = { 0:'🚋',1:'🚇',2:'🚆',3:'🚌',4:'⛴️',7:'🚡',11:'🚎',12:'🚝' };
-    const DIR_LABEL = { '0': 'Heen ➜', '1': '← Terug' };
 
     const params  = new URLSearchParams(location.search);
-    const routeId = params.get('id');
-    const line    = params.get('line') || '';
-    const agency  = params.get('agency') || '';
+    const routeId = params.get('route_id');
+    const dateParam = params.get('date'); // YYYYMMDD
 
-    document.title = `OVNu – Lijn ${line}`;
+    let tripsData = null;
 
-    let map = null;
-    let markersLayer = null;
-    let routeData = null;
-    let currentDir = null;
+    const DAYS   = ['zondag','maandag','dinsdag','woensdag','donderdag','vrijdag','zaterdag'];
+    const MONTHS = ['januari','februari','maart','april','mei','juni','juli','augustus','september','oktober','november','december'];
 
-    function initMap(lat, lon) {
-      map = L.map('routeMap').setView([lat, lon], 11);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-        maxZoom: 19
-      }).addTo(map);
-      markersLayer = L.layerGroup().addTo(map);
+    function pad(n) { return String(n).padStart(2, '0'); }
+
+    function toDateStr(d) {
+      return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}`;
     }
 
-    function renderStops(dirId) {
-      currentDir = dirId;
-      const stops = routeData[dirId] || [];
+    function parseDate(s) {
+      // YYYYMMDD → Date
+      return new Date(`${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}`);
+    }
 
-      // Update active tab
-      document.querySelectorAll('.dir-tab').forEach(t =>
-        t.classList.toggle('active', t.dataset.dir === dirId));
+    function timeToMinutes(t) {
+      const [h, m] = t.split(':').map(Number);
+      return h * 60 + m;
+    }
 
-      // Stop list
-      const ul = document.getElementById('stopList');
-      ul.innerHTML = '';
-      document.getElementById('stopCount').textContent =
-        `${stops.length} haltes`;
-
-      stops.forEach(stop => {
-        const li = document.createElement('li');
-        li.className = 'stop-line-item';
-        li.innerHTML = `<span class="stop-dot"></span>
-          <a class="stop-link" href="./?stop=${encodeURIComponent(stop.name)}"
-             title="Bekijk vertrektijden">${escHtml(stop.name)}</a>`;
-        li.addEventListener('click', e => {
-          if (e.target.tagName !== 'A') {
-            // centre map on stop
-            map?.setView([stop.lat, stop.lon], 15);
-          }
-        });
-        ul.appendChild(li);
-      });
-
-      // Map
-      if (!map) {
-        const mid = stops[Math.floor(stops.length / 2)] || stops[0];
-        if (mid) initMap(mid.lat, mid.lon);
-      }
-      if (!map || stops.length === 0) return;
-
-      markersLayer.clearLayers();
-
-      // Draw polyline
-      const latlngs = stops.map(s => [s.lat, s.lon]);
-      L.polyline(latlngs, { color: '#1a56db', weight: 4, opacity: .8 }).addTo(markersLayer);
-
-      // Start / end markers
-      const busIcon = (label) => L.divIcon({
-        html: `<div style="background:var(--blue,#1a56db);color:#fff;font-size:11px;font-weight:700;padding:2px 6px;border-radius:4px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.3)">${label}</div>`,
-        className: '', iconAnchor: [0, 10]
-      });
-
-      if (stops.length > 0) {
-        L.marker([stops[0].lat, stops[0].lon], { icon: busIcon(stops[0].name) }).addTo(markersLayer);
-        L.marker([stops[stops.length-1].lat, stops[stops.length-1].lon],
-          { icon: busIcon(stops[stops.length-1].name) }).addTo(markersLayer);
-      }
-
-      // Intermediate stops as small circles
-      stops.slice(1, -1).forEach(s => {
-        L.circleMarker([s.lat, s.lon], {
-          radius: 4, fillColor: '#1a56db', color: '#fff', weight: 1.5, fillOpacity: 1
-        }).addTo(markersLayer).bindPopup(`<strong>${s.name}</strong>`);
-      });
-
-      map.fitBounds(L.latLngBounds(latlngs), { padding: [30, 30] });
+    function formatTime(t) {
+      const [h, m] = t.split(':').map(Number);
+      const overnight = h >= 24;
+      const display = `${String(h % 24).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+      return overnight ? `${display}<span class="overnight" title="Volgende dag">+1</span>` : display;
     }
 
     function escHtml(s) {
       return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     }
 
-    async function load() {
-      if (!routeId) throw new Error('Geen route_id opgegeven in URL.');
-      // routeId is "feed:localId" (e.g. "nl:127769") → path "feed/localId"
-      const res = await fetch(`../data/route-stops/${routeId.replace(':', '/')}.json`);
-      if (!res.ok) throw new Error(`Route ${routeId} niet gevonden (${res.status}).`);
-      return res.json();
+    function renderTrips(selectedDate) {
+      if (!tripsData) return;
+      const dateStr  = toDateStr(selectedDate);
+      const todayStr = toDateStr(new Date());
+      const isToday  = dateStr === todayStr;
+      const nowMin   = isToday ? new Date().getHours() * 60 + new Date().getMinutes() : -1;
+
+      const activeSids = new Set();
+      for (const [sid, dates] of Object.entries(tripsData.services || {})) {
+        if (dates.includes(dateStr)) activeSids.add(sid);
+      }
+
+      const trips = (tripsData.trips || []).filter(t => activeSids.has(t.sid));
+
+      document.getElementById('tripsCount').textContent =
+        `${trips.length} rit${trips.length !== 1 ? 'ten' : ''}`;
+
+      if (trips.length === 0) {
+        document.getElementById('tripsContent').innerHTML =
+          `<p class="empty-msg">Geen ritten gevonden voor deze datum.</p>`;
+        return;
+      }
+
+      // For today: mark first upcoming trip; for other dates: mark first trip
+      const nextIdx = isToday
+        ? trips.findIndex(t => timeToMinutes(t.departure) >= nowMin)
+        : 0;
+
+      let html = `<table class="dep-table">
+        <thead><tr><th>Vertrektijd</th><th>Richting</th></tr></thead>
+        <tbody>`;
+      trips.forEach((trip, i) => {
+        const isPast = isToday && timeToMinutes(trip.departure) < nowMin;
+        const cls = i === nextIdx && nextIdx >= 0 ? 'next-up' : (isPast ? 'past' : '');
+        html += `<tr class="${cls}">
+          <td class="dep-time">${formatTime(trip.departure)}</td>
+          <td>${escHtml(trip.headsign)}</td>
+        </tr>`;
+      });
+      html += '</tbody></table>';
+      document.getElementById('tripsContent').innerHTML = html;
     }
 
     try {
-      routeData = await load();
-      const dirs = Object.keys(routeData).sort();
+      if (!routeId) throw new Error('Geen route_id opgegeven in URL.');
 
-      // Header
-      const icon = ROUTE_TYPE_ICON[3]; // default bus; could be passed via URL
+      const selectedDate = dateParam ? parseDate(dateParam) : new Date();
+      const dag   = DAYS[selectedDate.getDay()];
+      const datum = `${selectedDate.getDate()} ${MONTHS[selectedDate.getMonth()]} ${selectedDate.getFullYear()}`;
+      document.getElementById('dateDisplay').innerHTML =
+        `📅 Ritten op <strong>${dag} ${datum}</strong>`;
+
+      const [infoRes, tripsRes] = await Promise.all([
+        fetch(`../data/route-stops/${routeId}.json`),
+        fetch(`../data/route-trips/${routeId}.json`)
+      ]);
+      if (!infoRes.ok) throw new Error(`Route ${routeId} niet gevonden (${infoRes.status}).`);
+
+      const info = await infoRes.json();
+      tripsData = tripsRes.ok ? await tripsRes.json() : { trips: [], services: {} };
+
+      const icon = ROUTE_TYPE_ICON[info.route_type ?? 3] ?? '🚌';
+      document.title = `OVNu – Route ${info.short_name || routeId}`;
+
       document.getElementById('routeHeader').innerHTML = `
-        <div class="route-badge">${escHtml(line)}</div>
+        <div class="route-badge">${icon} ${escHtml(info.short_name || routeId)}</div>
         <div class="route-meta">
-          <strong>${escHtml(routeData[dirs[0]]?.[0]?.name ?? '')} ↔ ${escHtml(routeData[dirs[0]]?.[routeData[dirs[0]]?.length-1]?.name ?? '')}</strong>
-          <small>${escHtml(agency)}</small>
+          ${info.long_name ? `<strong>${escHtml(info.long_name)}</strong>` : ''}
+          <small>${escHtml(info.agency_name || '')}</small>
         </div>`;
 
-      // Direction tabs
-      if (dirs.length > 1) {
-        const tabBar = document.getElementById('dirTabs');
-        tabBar.hidden = false;
-        dirs.forEach(d => {
-          const btn = document.createElement('button');
-          btn.className = 'dir-tab';
-          btn.dataset.dir = d;
-          const endStop = routeData[d]?.[routeData[d].length - 1]?.name || `Richting ${d}`;
-          btn.textContent = `${d === '0' ? '➜' : '←'} ${endStop}`;
-          btn.addEventListener('click', () => renderStops(d));
-          tabBar.appendChild(btn);
-        });
-      }
-
-      renderStops(dirs[0]);
+      renderTrips(selectedDate);
 
     } catch (err) {
       const el = document.getElementById('errorMsg');

@@ -14,7 +14,7 @@
         <h1>🚏 OVNu</h1>
         <p class="subtitle">Vertrektijden bus, trein & tram bij de dichtstbijzijnde halte of station</p>
       </div>
-      <a href="lines" style="color:#fff;opacity:.9;font-size:.85rem;text-decoration:none;white-space:nowrap;border:1px solid rgba(255,255,255,.5);padding:.3rem .75rem;border-radius:20px">📋 Alle lijnen</a>
+      <a href="routes" style="color:#fff;opacity:.9;font-size:.85rem;text-decoration:none;white-space:nowrap;border:1px solid rgba(255,255,255,.5);padding:.3rem .75rem;border-radius:20px">📋 Alle routes</a>
     </div>
   </header>
 
@@ -42,13 +42,13 @@
     <section id="departuresPanel" class="departures-panel" hidden>
       <div class="departures-header">
         <h2 id="departuresTitle">Vertrektijden</h2>
-        <div class="day-selector">
-          <button class="day-btn" data-day="weekday">Ma–Vr</button>
-          <button class="day-btn active" data-day="today">Vandaag</button>
-          <button class="day-btn" data-day="saturday">Zaterdag</button>
-          <button class="day-btn" data-day="sunday">Zondag</button>
+        <div class="date-time-selector">
+          <button id="nowBtn" class="now-btn active" title="Vertrekken vanaf nu">🕒 Nu</button>
+          <input type="date" id="dateInput" />
         </div>
       </div>
+
+      <div id="scheduleLabel" class="schedule-label"></div>
 
       <div id="departuresContent" class="departures-content">
         <p class="empty-msg">Selecteer een halte om vertrektijden te bekijken.</p>

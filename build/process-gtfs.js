@@ -6,9 +6,9 @@
  *
  * Output files in ../data/:
  *   stops.json         - [{id, name, lat, lon, town}]
- *   routes.json        - [{id, short_name, long_name}]
- *   schedules/{id}.json - {weekday:[], saturday:[], sunday:[]}  (per stop)
- *   shapes/{id}.json    - [[lat,lon],...]                       (per shape)
+ *   lines.json         - [{agency_name, routes:[{id, short_name, long_name, route_type}]}]
+  *   schedules/{id}.json - {deps:[], services:{svcId:[YYYYMMDD,...]}}  (per stop)
+  *   shapes/{id}.json    - [[lat,lon],...]                       (per shape)
  *   route-stops/{id}.json - {direction: [{id,name,lat,lon},...]}
  *
  * Stop IDs and shape IDs are prefixed with the feed name (e.g. "nl:12345")
@@ -111,8 +111,12 @@ function streamCsv(name, extractDir, onRow) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
+function gtfsDateStr(d) {
+  return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+}
+
 async function processFeed(feed, shared) {
-  const { schedule, usedStopIds, allStopMap, allRoutesList, allLinesList, allAgencies } = shared;
+  const { schedule, usedStopIds, allStopMap, allLinesList, allAgencies, serviceDatesPerFeed } = shared;
 
   const gtfsFile  = await download(feed);
   const extractDir = join(__dirname, `gtfs-extracted-${feed.name}`);
@@ -149,61 +153,52 @@ async function processFeed(feed, shared) {
   const serviceIds = new Set(trips.map(t => t.service_id));
   log(`[${feed.name}] ${trips.length} trips, ${serviceIds.size} service_ids`);
 
-  // 4. Classify service_ids → day types
-  log(`[${feed.name}] Classifying service days...`);
+  // 4. Collect concrete running dates for each service_id
+  log(`[${feed.name}] Collecting service dates...`);
   const today = new Date();
+  today.setHours(0, 0, 0, 0);
   const sixMonthsOn = new Date(today);
   sixMonthsOn.setMonth(sixMonthsOn.getMonth() + 6);
+  const todayStr      = gtfsDateStr(today);
+  const sixMonthsOnStr = gtfsDateStr(sixMonthsOn);
 
-  const serviceDayCounts = new Map(); // service_id → {weekday, saturday, sunday}
+  const serviceDates = new Map(); // service_id → Set<YYYYMMDD>
 
-  // 4a. calendar.txt (standard weekly schedule, if present)
+  // 4a. calendar.txt (standard weekly schedule)
   const calRows = parseSmall('calendar.txt', extractDir);
-  if (calRows.length > 0) {
-    const DOW = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
-    for (const row of calRows) {
-      if (!serviceIds.has(row.service_id)) continue;
-      const start = new Date(`${row.start_date.slice(0,4)}-${row.start_date.slice(4,6)}-${row.start_date.slice(6,8)}`);
-      const end   = new Date(`${row.end_date.slice(0,4)}-${row.end_date.slice(4,6)}-${row.end_date.slice(6,8)}`);
-      const lo = start < today ? today : start;
-      const hi = end   > sixMonthsOn ? sixMonthsOn : end;
-      for (let d = new Date(lo); d <= hi; d.setDate(d.getDate() + 1)) {
-        const dow = d.getDay();
-        if (row[DOW[dow]] !== '1') continue;
-        const dayType = dow === 0 ? 'sunday' : dow === 6 ? 'saturday' : 'weekday';
-        if (!serviceDayCounts.has(row.service_id)) serviceDayCounts.set(row.service_id, { weekday: 0, saturday: 0, sunday: 0 });
-        serviceDayCounts.get(row.service_id)[dayType]++;
-      }
+  const DOW_NAMES = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+  for (const row of calRows) {
+    if (!serviceIds.has(row.service_id)) continue;
+    const start = new Date(`${row.start_date.slice(0,4)}-${row.start_date.slice(4,6)}-${row.start_date.slice(6,8)}`);
+    const end   = new Date(`${row.end_date.slice(0,4)}-${row.end_date.slice(4,6)}-${row.end_date.slice(6,8)}`);
+    const lo = start < today ? today : start;
+    const hi = end   > sixMonthsOn ? sixMonthsOn : end;
+    for (let d = new Date(lo); d <= hi; d.setDate(d.getDate() + 1)) {
+      if (row[DOW_NAMES[d.getDay()]] !== '1') continue;
+      const ds = gtfsDateStr(d);
+      if (!serviceDates.has(row.service_id)) serviceDates.set(row.service_id, new Set());
+      serviceDates.get(row.service_id).add(ds);
     }
-    log(`[${feed.name}] calendar.txt: ${calRows.length} service rows`);
   }
+  log(`[${feed.name}] calendar.txt: ${calRows.length} service rows`);
 
-  // 4b. calendar_dates.txt (exceptions / sole source)
+  // 4b. calendar_dates.txt — exception_type=1 adds a date, exception_type=2 removes it
   const calDates = parseSmall('calendar_dates.txt', extractDir);
   log(`[${feed.name}] calendar_dates.txt: ${calDates.length.toLocaleString()} rows`);
   for (const row of calDates) {
-    if (!serviceIds.has(row.service_id) || row.exception_type !== '1') continue;
-    const d  = row.date;
-    const dt = new Date(`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`);
-    if (dt < today || dt > sixMonthsOn) continue;
-    const dow = dt.getDay();
-    const dayType = dow === 0 ? 'sunday' : dow === 6 ? 'saturday' : 'weekday';
-    if (!serviceDayCounts.has(row.service_id)) serviceDayCounts.set(row.service_id, { weekday: 0, saturday: 0, sunday: 0 });
-    serviceDayCounts.get(row.service_id)[dayType]++;
+    if (!serviceIds.has(row.service_id)) continue;
+    const ds = row.date; // already YYYYMMDD
+    if (ds < todayStr || ds > sixMonthsOnStr) continue;
+    if (row.exception_type === '1') {
+      if (!serviceDates.has(row.service_id)) serviceDates.set(row.service_id, new Set());
+      serviceDates.get(row.service_id).add(ds);
+    } else if (row.exception_type === '2') {
+      serviceDates.get(row.service_id)?.delete(ds);
+    }
   }
 
-  // Classify: only mark as 'weekday' if weekday count strictly exceeds sunday count.
-  // Prevents holiday-only runs (e.g. Hemelvaartsdag, Pinkstermaandag) from leaking
-  // into the normal weekday schedule.
-  const serviceDay = new Map();
-  for (const [serviceId, counts] of serviceDayCounts) {
-    const days = [];
-    if (counts.weekday > 0 && counts.weekday > counts.sunday) days.push('weekday');
-    if (counts.saturday > 0) days.push('saturday');
-    if (counts.sunday > 0) days.push('sunday');
-    if (days.length > 0) serviceDay.set(serviceId, days);
-  }
-  log(`[${feed.name}] ${serviceDay.size} services classified`);
+  serviceDatesPerFeed.set(feed.name, serviceDates);
+  log(`[${feed.name}] ${serviceDates.size} services with concrete dates`);
 
   // 5. Stops — build prefixed stop map
   log(`[${feed.name}] Parsing stops.txt...`);
@@ -212,41 +207,22 @@ async function processFeed(feed, shared) {
     allStopMap.set(`${feed.name}:${s.stop_id}`, s);
   }
 
-  // Representative trips for route-stop lists.
-  // Strategy: collect ALL valid trips as candidates per (route, direction).
-  // Pass 1 counts the max stop_sequence per candidate trip (cheap: one integer per trip).
-  // After pass 1 we select the trip with the most stops per direction as the representative.
-  // Pass 2 (lightweight) then collects the full stop sequence only for those selected trips.
-  const repTripCandidates = new Map(); // "route_id|dir" → Set<trip_id>
-  const candidateTripIds  = new Set(); // all valid trip_ids for candidates
-
-  for (const trip of trips) {
-    if (!serviceDay.has(trip.service_id)) continue;
-    const key = `${trip.route_id}|${trip.direction_id ?? '0'}`;
-    if (!repTripCandidates.has(key)) repTripCandidates.set(key, new Set());
-    repTripCandidates.get(key).add(trip.trip_id);
-    candidateTripIds.add(trip.trip_id);
-  }
-  log(`[${feed.name}] ${candidateTripIds.size} candidate trips for route-stop selection`);
-
-  // 6. Stream stop_times — build schedules AND count max stop_sequence per candidate trip
-  const candidateMaxSeq = new Map(); // trip_id → highest stop_sequence seen
+  // 6. Stream stop_times — build schedules and track first departure per trip
   log(`[${feed.name}] Streaming stop_times.txt...`);
+  const tripFirstDep = new Map(); // trip_id → {seq, time}
   const rowCount = await streamCsv('stop_times.txt', extractDir, (st) => {
     const trip = tripMap.get(st.trip_id);
     if (!trip) return;
     const route = routeMap.get(trip.route_id);
     if (!route) return;
 
-    // Track the highest stop_sequence per candidate to find the longest trip later.
-    if (candidateTripIds.has(st.trip_id)) {
-      const seq = parseInt(st.stop_sequence);
-      const cur = candidateMaxSeq.get(st.trip_id) || 0;
-      if (seq > cur) candidateMaxSeq.set(st.trip_id, seq);
-    }
+    // Track first departure (lowest stop_sequence) per trip
+    const seq = parseInt(st.stop_sequence);
+    const cur = tripFirstDep.get(st.trip_id);
+    if (!cur || seq < cur.seq) tripFirstDep.set(st.trip_id, { seq, time: st.departure_time });
 
-    const dayTypes = serviceDay.get(trip.service_id);
-    if (!dayTypes?.length) return;
+    const svcDates = serviceDates.get(trip.service_id);
+    if (!svcDates?.size) return;
 
     // Skip stops where boarding is not allowed (drop-off only / terminus arrivals).
     // pickup_type=1 means "No pickup available" per the GTFS spec — these are not departures.
@@ -254,66 +230,77 @@ async function processFeed(feed, shared) {
 
     const stopId = `${feed.name}:${st.stop_id}`;
     usedStopIds.add(stopId);
-    if (!schedule[stopId]) schedule[stopId] = { weekday: [], saturday: [], sunday: [] };
+    if (!schedule[stopId]) schedule[stopId] = [];
 
-    const entry = {
+    schedule[stopId].push({
       time:     st.departure_time,
       line:     route.route_short_name,
       headsign: trip.trip_headsign,
       agency:   routeAgency.get(trip.route_id) || '',
-      route_id: `${feed.name}:${trip.route_id}`
-    };
-    for (const day of dayTypes) schedule[stopId][day].push(entry);
+      route_id: trip.route_id,
+      sid:      trip.service_id
+    });
   });
   log(`[${feed.name}] ${rowCount.toLocaleString()} stop_times rows processed`);
 
-  // Select the representative per direction: the trip with the most stops.
-  const repTripKey = new Map(); // "route_id|dir" → best trip_id
-  for (const [key, candidates] of repTripCandidates) {
-    let bestTrip = null, bestCount = -1;
-    for (const tid of candidates) {
-      const count = candidateMaxSeq.get(tid) || 0;
-      if (count > bestCount) { bestCount = count; bestTrip = tid; }
-    }
-    if (bestTrip) repTripKey.set(key, bestTrip);
+  // 6b. Build route-trips: one entry per trip with first departure time
+  const routeTripsMap = {}; // route_id → [trips]
+  for (const trip of trips) {
+    const firstDep = tripFirstDep.get(trip.trip_id);
+    if (!firstDep) continue;
+    const svcDates = serviceDates.get(trip.service_id);
+    if (!svcDates?.size) continue;
+    const rid = trip.route_id;
+    if (!routeTripsMap[rid]) routeTripsMap[rid] = [];
+    routeTripsMap[rid].push({
+      trip_id:      trip.trip_id,
+      headsign:     trip.trip_headsign || '',
+      departure:    firstDep.time,
+      direction_id: trip.direction_id || '0',
+      sid:          trip.service_id
+    });
   }
-  const repTripIds   = new Set(repTripKey.values());
-  const repTripStops = new Map();
-  log(`[${feed.name}] ${repTripKey.size} representative trips selected (most stops per direction)`);
-
-  // Pass 2 (lightweight): collect full stop sequences only for the selected representatives.
-  log(`[${feed.name}] Collecting stop sequences for representative trips...`);
-  await streamCsv('stop_times.txt', extractDir, (st) => {
-    if (!repTripIds.has(st.trip_id)) return;
-    if (!repTripStops.has(st.trip_id)) repTripStops.set(st.trip_id, []);
-    repTripStops.get(st.trip_id).push([parseInt(st.stop_sequence), `${feed.name}:${st.stop_id}`]);
-  });
+  for (const trips of Object.values(routeTripsMap)) {
+    trips.sort((a, b) => a.departure.localeCompare(b.departure));
+  }
+  const routeTripsDir = join(DATA_DIR, 'route-trips');
+  mkdirSync(routeTripsDir, { recursive: true });
+  let routeTripsWritten = 0;
+  for (const [routeId, trips] of Object.entries(routeTripsMap)) {
+    const sids = new Set(trips.map(t => t.sid));
+    const services = {};
+    for (const sid of sids) {
+      const dates = serviceDates.get(sid);
+      if (dates?.size) services[sid] = [...dates].sort();
+    }
+    writeFileSync(join(routeTripsDir, `${routeId}.json`), JSON.stringify({ trips, services }));
+    routeTripsWritten++;
+  }
+  log(`[${feed.name}] Wrote ${routeTripsWritten} route-trips files`);
 
   // 7. Sort + deduplicate per stop
-  for (const sid of Object.keys(schedule)) {
-    if (!sid.startsWith(`${feed.name}:`)) continue;
-    for (const day of ['weekday','saturday','sunday']) {
-      const seen = new Set();
-      let entries = schedule[sid][day]
-        .sort((a, b) => a.time.localeCompare(b.time))
-        .filter(d => {
-          const key = `${d.time}|${d.line}|${d.headsign}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-      const lastMin = new Map();
-      entries = entries.filter(d => {
-        const key = `${d.line}|${d.headsign}`;
-        const [h, m] = d.time.split(':').map(Number);
-        const mins = h * 60 + m;
-        const last = lastMin.get(key);
-        if (last !== undefined && mins - last <= 2) return false;
-        lastMin.set(key, mins);
+  for (const stopId of Object.keys(schedule)) {
+    if (!stopId.startsWith(`${feed.name}:`)) continue;
+    const seen = new Set();
+    let entries = schedule[stopId]
+      .sort((a, b) => a.time.localeCompare(b.time))
+      .filter(d => {
+        const key = `${d.time}|${d.line}|${d.headsign}|${d.sid}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
         return true;
       });
-      schedule[sid][day] = entries;
-    }
+    const lastMin = new Map();
+    entries = entries.filter(d => {
+      const key = `${d.line}|${d.headsign}|${d.sid}`;
+      const [h, m] = d.time.split(':').map(Number);
+      const mins = h * 60 + m;
+      const last = lastMin.get(key);
+      if (last !== undefined && mins - last <= 2) return false;
+      lastMin.set(key, mins);
+      return true;
+    });
+    schedule[stopId] = entries;
   }
 
   // 8. Lines list
@@ -321,7 +308,7 @@ async function processFeed(feed, shared) {
   for (const r of routes) {
     if (!agencyRoutes.has(r.agency_id)) agencyRoutes.set(r.agency_id, []);
     agencyRoutes.get(r.agency_id).push({
-      id:         `${feed.name}:${r.route_id}`,
+      id:         r.route_id,
       short_name: r.route_short_name || '',
       long_name:  r.route_long_name  || '',
       route_type: parseInt(r.route_type) || 3
@@ -330,7 +317,6 @@ async function processFeed(feed, shared) {
   const collator = new Intl.Collator('nl', { numeric: true });
   for (const [agency_id, rts] of agencyRoutes) {
     allLinesList.push({
-      agency_id:   `${feed.name}:${agency_id}`,
       agency_name: agencyMap.get(agency_id) || agency_id,
       routes: rts
         .filter((r, i, arr) => arr.findIndex(x => x.short_name === r.short_name) === i)
@@ -338,53 +324,23 @@ async function processFeed(feed, shared) {
     });
   }
 
-  // Routes list (backward compat)
-  for (const r of routes) {
-    allRoutesList.push({
-      id:         `${feed.name}:${r.route_id}`,
-      short_name: r.route_short_name,
-      long_name:  r.route_long_name || ''
-    });
-  }
-
-  // 9. Route-stop files
-  log(`[${feed.name}] Writing route-stop files...`);
+  // 9. Route info files (one per route: metadata only)
+  log(`[${feed.name}] Writing route info files...`);
   const routeStopsDir = join(DATA_DIR, 'route-stops');
   mkdirSync(routeStopsDir, { recursive: true });
-  const routeDirTrips = new Map();
-  for (const [key, tripId] of repTripKey) {
-    const bar = key.lastIndexOf('|');
-    const routeId = `${feed.name}:${key.slice(0, bar)}`;
-    const dirId   = key.slice(bar + 1);
-    if (!routeDirTrips.has(routeId)) routeDirTrips.set(routeId, {});
-    routeDirTrips.get(routeId)[dirId] = tripId;
-  }
   let routeStopsWritten = 0;
-  for (const [routeId, dirs] of routeDirTrips) {
-    const result = {};
-    for (const [dirId, tripId] of Object.entries(dirs)) {
-      const raw = repTripStops.get(tripId) || [];
-      raw.sort((a, b) => a[0] - b[0]);
-      result[dirId] = raw.map(([, stopId]) => {
-        const s = allStopMap.get(stopId);
-        if (!s) return null;
-        return {
-          id: stopId,
-          name: s.stop_name,
-          lat: Math.round(parseFloat(s.stop_lat) * 100000) / 100000,
-          lon: Math.round(parseFloat(s.stop_lon) * 100000) / 100000
-        };
-      }).filter(Boolean);
-    }
-    // routeId = "feed:localId" → write to route-stops/feed/localId.json
-    const colonIdx = routeId.indexOf(':');
-    const feedPart = routeId.slice(0, colonIdx);
-    const localId  = routeId.slice(colonIdx + 1);
-    mkdirSync(join(routeStopsDir, feedPart), { recursive: true });
-    writeFileSync(join(routeStopsDir, feedPart, `${localId}.json`), JSON.stringify(result));
+  for (const r of routes) {
+    const agencyName = agencyMap.get(r.agency_id) || r.agency_id || '';
+    const info = {
+      short_name:  r.route_short_name || '',
+      long_name:   r.route_long_name  || '',
+      agency_name: agencyName,
+      route_type:  parseInt(r.route_type) || 3
+    };
+    writeFileSync(join(routeStopsDir, `${r.route_id}.json`), JSON.stringify(info));
     routeStopsWritten++;
   }
-  log(`[${feed.name}] Wrote ${routeStopsWritten} route-stop files`);
+  log(`[${feed.name}] Wrote ${routeStopsWritten} route info files`);
 }
 
 async function main() {
@@ -393,19 +349,19 @@ async function main() {
 
   // Shared accumulators across all feeds
   const shared = {
-    schedule:    {},
-    usedStopIds: new Set(),
-    allStopMap:  new Map(),
-    allRoutesList: [],
-    allLinesList:  [],
-    allAgencies:   new Map()
+    schedule:            {},
+    usedStopIds:         new Set(),
+    allStopMap:          new Map(),
+    allLinesList:        [],
+    allAgencies:         new Map(),
+    serviceDatesPerFeed: new Map()
   };
 
   for (const feed of feeds) {
     await processFeed(feed, shared);
   }
 
-  const { schedule, usedStopIds, allStopMap, allRoutesList, allLinesList, allAgencies } = shared;
+  const { schedule, usedStopIds, allStopMap, allLinesList, allAgencies } = shared;
   log(`Schedule built for ${Object.keys(schedule).length} stops across all feeds`);
 
   // Write output
@@ -434,7 +390,6 @@ async function main() {
   log(`${usedStops.length} stops with coordinates`);
 
   writeFileSync(join(DATA_DIR, 'stops.json'),    JSON.stringify(usedStops));
-  writeFileSync(join(DATA_DIR, 'routes.json'),   JSON.stringify(allRoutesList));
   writeFileSync(join(DATA_DIR, 'lines.json'),    JSON.stringify(allLinesList));
   writeFileSync(join(DATA_DIR, 'agencies.json'), JSON.stringify(
     [...allAgencies.entries()].map(([id, name]) => ({ id, name }))
@@ -444,9 +399,7 @@ async function main() {
   // feeds-info.json — per-feed stats for the UI
   const feedsInfo = feeds.map(feed => {
     const feedStops  = usedStops.filter(s => s.id.startsWith(`${feed.name}:`)).length;
-    const feedRoutes = allLinesList
-      .filter(ag => ag.agency_id.startsWith(`${feed.name}:`))
-      .reduce((sum, ag) => sum + ag.routes.length, 0);
+    const feedRoutes = allLinesList.reduce((sum, ag) => sum + ag.routes.length, 0);
     return { name: feed.name, label: feed.label || feed.name, routes: feedRoutes, stops: feedStops };
   });
   writeFileSync(join(DATA_DIR, 'feeds-info.json'), JSON.stringify(feedsInfo));
@@ -456,19 +409,26 @@ async function main() {
   const schedDir = join(DATA_DIR, 'schedules');
   mkdirSync(schedDir, { recursive: true });
   let written = 0;
-  for (const [stopId, daySched] of Object.entries(schedule)) {
+  for (const [stopId, deps] of Object.entries(schedule)) {
     const colonIdx = stopId.indexOf(':');
     const feedName = stopId.slice(0, colonIdx);
     const localId  = stopId.slice(colonIdx + 1);
+    const feedServiceDates = shared.serviceDatesPerFeed.get(feedName);
+    const sids = new Set(deps.map(d => d.sid));
+    const services = {};
+    for (const sid of sids) {
+      const dates = feedServiceDates?.get(sid);
+      if (dates?.size) services[sid] = [...dates].sort();
+    }
     mkdirSync(join(schedDir, feedName), { recursive: true });
-    writeFileSync(join(schedDir, feedName, `${localId}.json`), JSON.stringify(daySched));
+    writeFileSync(join(schedDir, feedName, `${localId}.json`), JSON.stringify({ deps, services }));
     written++;
   }
   log(`Wrote ${written} per-stop schedule files to data/schedules/`);
 
   const kb = f => (readFileSync(f).length / 1024).toFixed(0) + ' KB';
   log(`stops.json: ${kb(join(DATA_DIR,'stops.json'))}`);
-  log(`routes.json: ${kb(join(DATA_DIR,'routes.json'))}`);
+  log(`lines.json: ${kb(join(DATA_DIR,'lines.json'))}`);
   log('✅ Done!');
 }
 

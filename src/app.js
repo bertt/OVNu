@@ -15,7 +15,7 @@ let stops = [];        // [{id, name, lat, lon, town}]
 let agencyById = {};       // "feed:rawId" → agency_name
 let agencyByRawId = {};    // "rawId" → {name}
 let dataLoaded = false;
-const scheduleCache = {}; // stop_id → {weekday:[], saturday:[], sunday:[]}
+const scheduleCache = {}; // stop_id → {deps:[], services:{}}
 
 async function loadData() {
   const [stopsRes, agenciesRes, feedsRes] = await Promise.all([
@@ -52,9 +52,14 @@ async function loadStopSchedule(stopId) {
   if (scheduleCache[stopId]) return scheduleCache[stopId];
   // stopId is "feed:localId" (e.g. "nl:3517780") → path "feed/localId"
   const res = await fetch(`../data/schedules/${stopId.replace(':', '/')}.json`);
-  if (!res.ok) return { weekday: [], saturday: [], sunday: [] };
-  scheduleCache[stopId] = await res.json();
-  return scheduleCache[stopId];
+  if (!res.ok) return { deps: [], services: {} };
+  const data = await res.json();
+  // Convert service date arrays to Sets for fast lookup
+  for (const sid of Object.keys(data.services || {})) {
+    data.services[sid] = new Set(data.services[sid]);
+  }
+  scheduleCache[stopId] = data;
+  return data;
 }
 
 // ── Haversine distance (km) ───────────────────────────────────────────────────
@@ -85,18 +90,50 @@ function nearestStops(lat, lon, n = 8) {
     .slice(0, n);
 }
 
-// ── Day helpers ───────────────────────────────────────────────────────────────
+// ── Datetime helpers ──────────────────────────────────────────────────────────
 
-function todayDayType() {
-  const dow = new Date().getDay(); // 0=sun, 6=sat
-  if (dow === 0) return 'sunday';
-  if (dow === 6) return 'saturday';
-  return 'weekday';
+let nowMode = true;
+
+const DAYS_NL   = ['zondag','maandag','dinsdag','woensdag','donderdag','vrijdag','zaterdag'];
+const MONTHS_NL = ['januari','februari','maart','april','mei','juni','juli','augustus','september','oktober','november','december'];
+
+function pad(n) { return String(n).padStart(2, '0'); }
+
+function nowDateValue() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 }
 
-function nowMinutes() {
-  const d = new Date();
-  return d.getHours() * 60 + d.getMinutes();
+function toDateStr(d) {
+  return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}`;
+}
+
+function currentDatetime() {
+  if (nowMode) return new Date();
+  const dateVal = document.getElementById('dateInput')?.value;
+  // Date-only mode: return midnight of selected date (shows all trips that day)
+  return dateVal ? new Date(`${dateVal}T00:00`) : new Date();
+}
+
+function setNowMode(active) {
+  nowMode = active;
+  document.getElementById('nowBtn')?.classList.toggle('active', active);
+  document.getElementById('dateInput')?.classList.toggle('dim', active);
+}
+
+function updateScheduleLabel(datetime) {
+  const label = document.getElementById('scheduleLabel');
+  if (!label) return;
+  const dag   = DAYS_NL[datetime.getDay()];
+  const datum = `${datetime.getDate()} ${MONTHS_NL[datetime.getMonth()]}`;
+  const tijd  = `${pad(datetime.getHours())}:${pad(datetime.getMinutes())}`;
+  if (nowMode) {
+    label.className = 'schedule-label now-active';
+    label.innerHTML = `🟢 Vertrekken vanaf <strong>nu</strong> – ${dag} ${datum} om ${tijd}`;
+  } else {
+    label.className = 'schedule-label date-active';
+    label.innerHTML = `📅 Alle vertrekken op <strong>${dag} ${datum}</strong>`;
+  }
 }
 
 function timeToMinutes(t) {
@@ -189,90 +226,100 @@ function selectStop(stop) {
   // Open popup on map
   const marker = stopMarkers.find(m => m.stopId === stop.id);
   if (marker) marker.openPopup();
-  // Show departures — merge all stops sharing this name (both directions)
+  // Show departures
   document.getElementById('departuresTitle').textContent = stop.name;
   document.getElementById('departuresPanel').hidden = false;
-  renderDepartures(stop.name, currentDay());
+  renderDepartures(stop.name, currentDatetime());
 }
 
-function currentDay() {
-  const active = document.querySelector('.day-btn.active');
-  const day = active?.dataset.day;
-  return day === 'today' ? todayDayType() : (day || todayDayType());
-}
+document.getElementById('nowBtn')?.addEventListener('click', () => {
+  document.getElementById('dateInput').value = nowDateValue();
+  setNowMode(true);
+  if (selectedStopName) renderDepartures(selectedStopName, new Date());
+});
 
-document.querySelectorAll('.day-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.day-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    if (selectedStopName) renderDepartures(selectedStopName, currentDay());
-  });
+document.getElementById('dateInput')?.addEventListener('change', () => {
+  setNowMode(false);
+  if (selectedStopName) renderDepartures(selectedStopName, currentDatetime());
 });
 
 // ── Departures rendering ──────────────────────────────────────────────────────
 
-async function renderDepartures(stopName, dayType) {
+async function renderDepartures(stopName, datetime) {
+  updateScheduleLabel(datetime);
   const container = document.getElementById('departuresContent');
   container.innerHTML = '<p class="empty-msg"><span class="spinner"></span> Laden…</p>';
+
+  const dateStr = toDateStr(datetime);
+  // In Nu mode filter by current time; in date mode show all trips for that day
+  const timeMin = nowMode ? datetime.getHours() * 60 + datetime.getMinutes() : 0;
 
   const stopIds = stops.filter(s => s.name === stopName).map(s => s.id);
   const scheds = await Promise.all(stopIds.map(id => loadStopSchedule(id)));
 
-  // Merge and deduplicate
+  // Find active service IDs for the selected date
+  const activeSids = new Set();
+  for (const sched of scheds) {
+    for (const [sid, dates] of Object.entries(sched.services || {})) {
+      if (dates.has(dateStr)) activeSids.add(sid);
+    }
+  }
+
+  // Merge and deduplicate across physical stops with the same name
   const seen = new Set();
   let deps = [];
   for (const sched of scheds) {
-    for (const dep of (sched[dayType] ?? [])) {
+    for (const dep of (sched.deps || [])) {
+      if (!activeSids.has(dep.sid)) continue;
       const key = `${dep.time}|${dep.line}|${dep.headsign}`;
       if (!seen.has(key)) { seen.add(key); deps.push(dep); }
     }
   }
   deps.sort((a, b) => a.time.localeCompare(b.time));
 
+  // Filter to departures at or after the selected time
+  deps = deps.filter(d => timeToMinutes(d.time) >= timeMin);
+
   // Collapse same-trip entries: same line+headsign within 2 min = same bus
   // passing through adjacent stops with the same name (keep the earliest)
-  const lastSeen = new Map(); // `line|headsign` → last departure in minutes
+  const lastSeen = new Map();
   deps = deps.filter(dep => {
     const key = `${dep.line}|${dep.headsign}`;
-    const timeMin = timeToMinutes(dep.time);
+    const timeM = timeToMinutes(dep.time);
     const last = lastSeen.get(key);
-    if (last !== undefined && timeMin - last <= 2) return false;
-    lastSeen.set(key, timeMin);
+    if (last !== undefined && timeM - last <= 2) return false;
+    lastSeen.set(key, timeM);
     return true;
   });
 
-  // For "today" view: filter to upcoming departures only
-  const isToday = document.querySelector('.day-btn.active')?.dataset.day === 'today';
-  if (isToday) {
-    const nowMin = nowMinutes();
-    deps = deps.filter(d => timeToMinutes(d.time) >= nowMin);
-  }
-
-  const dayLabel = dayType === 'weekday' ? 'maandag–vrijdag'
-                 : dayType === 'saturday' ? 'zaterdag' : 'zondag';
-
   if (deps.length === 0) {
-    container.innerHTML = `<p class="empty-msg">Geen ${isToday ? 'komende' : ''} vertrektijden gevonden voor ${dayLabel}.</p>`;
+    container.innerHTML = `<p class="empty-msg">Geen vertrektijden gevonden voor de gekozen datum.</p>`;
     return;
   }
 
-  // Mark first departure as next
+  // First upcoming trip index (for nu mode)
+  const nowMin = nowMode ? datetime.getHours() * 60 + datetime.getMinutes() : -1;
+  const nextIdx = nowMode ? deps.findIndex(d => timeToMinutes(d.time) >= nowMin) : 0;
 
   let html = `<table class="dep-table">
-    <thead><tr><th>Tijd</th><th>Lijn</th><th>Maatschappij</th><th>Richting</th></tr></thead>
+    <thead><tr><th>Tijd</th><th>Route</th><th>Maatschappij</th><th>Richting</th></tr></thead>
     <tbody>`;
   deps.forEach((dep, i) => {
     const [h, m] = dep.time.split(':').map(Number);
     const overnight = h >= 24;
     const displayTime = `${String(h % 24).padStart(2, '0')}:${String(m).padStart(2, '0')}${overnight ? '<span class="overnight" title="Volgende dag">+1</span>' : ''}`;
-    const cls = i === 0 && isToday ? 'next-up' : '';
+    const isPast = nowMode && timeToMinutes(dep.time) < nowMin;
+    const cls = i === nextIdx && nextIdx >= 0 ? 'next-up' : (isPast ? 'past' : '');
     const agInfo = dep.agency ? agencyByRawId[dep.agency] : null;
     const agencyName = agInfo ? agInfo.name : (dep.agency || '');
-    const lineLink = dep.route_id
-      ? `<a href="route?id=${encodeURIComponent(dep.route_id)}&line=${encodeURIComponent(dep.line)}&agency=${encodeURIComponent(agencyName)}&type=3" class="dep-link">${escHtml(dep.line)}</a>`
+    const routeUrl = dep.route_id
+      ? `route?route_id=${encodeURIComponent(dep.route_id)}&date=${dateStr}`
+      : null;
+    const lineLink = routeUrl
+      ? `<a href="${routeUrl}" class="dep-link">${escHtml(dep.line)}</a>`
       : escHtml(dep.line);
     const agencyLink = agencyName
-      ? `<a href="lines?agency=${encodeURIComponent(agencyName)}" class="dep-link">${escHtml(agencyName)}</a>`
+      ? `<a href="routes?agency=${encodeURIComponent(agencyName)}" class="dep-link">${escHtml(agencyName)}</a>`
       : '';
     html += `<tr class="${cls}">
       <td class="dep-time">${displayTime}</td>
@@ -457,6 +504,14 @@ async function init() {
   document.getElementById('contentGrid').hidden = false;
   initMap(52.1, 5.3, 7);
   setTimeout(() => map?.invalidateSize(), 100);
+
+  // Initialise date input to today; set min=today to gray out past dates
+  const dateEl = document.getElementById('dateInput');
+  if (dateEl) {
+    dateEl.value = nowDateValue();
+    dateEl.min   = nowDateValue();
+  }
+  setNowMode(true);
 
   showStatus('<span class="spinner"></span> Haltegegevens laden…', 'info');
   try {

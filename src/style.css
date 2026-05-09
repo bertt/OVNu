@@ -157,18 +157,60 @@ main {
 }
 .departures-header h2 { font-size: 1.1rem; }
 
-.day-selector { display: flex; gap: .4rem; flex-wrap: wrap; }
-.day-btn {
-  padding: .35rem .7rem;
-  border: 1.5px solid var(--gray-200);
+.day-selector { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; }
+
+.now-btn {
+  padding: .35rem .85rem;
+  border: 2px solid var(--gray-200);
   border-radius: 20px;
   background: #fff;
+  color: var(--gray-700);
   font-size: .82rem;
   cursor: pointer;
-  transition: all .15s;
+  font-weight: 600;
+  transition: background .15s, border-color .15s, color .15s;
+  white-space: nowrap;
 }
-.day-btn:hover { border-color: var(--blue); color: var(--blue); }
-.day-btn.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+.now-btn.active {
+  background: #d1fae5;
+  border-color: #059669;
+  color: #065f46;
+}
+.now-btn.active::after { content: ' ✓'; }
+.now-btn:not(.active):hover { border-color: var(--blue); color: var(--blue); }
+
+input[type="date"] {
+  padding: .3rem .65rem;
+  border: 2px solid var(--gray-200);
+  border-radius: 20px;
+  font-size: .82rem;
+  font-family: inherit;
+  outline: none;
+  background: #fff;
+  cursor: pointer;
+  color: var(--gray-900);
+  transition: border-color .15s, opacity .15s;
+}
+input[type="date"]:focus { border-color: var(--blue); }
+input[type="date"].dim { opacity: .4; }
+
+.schedule-label {
+  font-size: .88rem;
+  font-weight: 500;
+  padding: .4rem .85rem;
+  border-radius: var(--radius);
+  margin-bottom: .75rem;
+}
+.schedule-label.now-active {
+  background: #d1fae5;
+  color: #065f46;
+  border: 1px solid #6ee7b7;
+}
+.schedule-label.date-active {
+  background: var(--blue-light);
+  color: var(--blue-dark);
+  border: 1px solid #c5d6f8;
+}
 
 /* ── Departure table ──────────────────────────────────────────────────────── */
 .departures-content { min-height: 60px; overflow-x: auto; }
