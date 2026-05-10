@@ -37,6 +37,25 @@ async function loadData() {
     const feedsInfo = await feedsRes.json();
     renderFeedsInfo(feedsInfo);
   }
+
+  // Detect platform letters (e.g. "Ede, Station Ede-Wageningen A" → baseName + platform).
+  // Only activate when ≥2 stops share the same tentative baseName (avoids false positives).
+  const baseCount = new Map();
+  for (const s of stops) {
+    const m = s.name.match(/^(.+)\s+([A-Z])$/);
+    if (m) baseCount.set(m[1], (baseCount.get(m[1]) || 0) + 1);
+  }
+  for (const s of stops) {
+    const m = s.name.match(/^(.+)\s+([A-Z])$/);
+    if (m && (baseCount.get(m[1]) || 0) >= 2) {
+      s.baseName = m[1];
+      s.platform = m[2];
+    } else {
+      s.baseName = s.name;
+      s.platform = null;
+    }
+  }
+
   dataLoaded = true;
 }
 
@@ -78,8 +97,8 @@ function nearestStops(lat, lon, n = 8) {
     .map(s => ({ ...s, dist: haversine(lat, lon, s.lat, s.lon) }))
     .sort((a, b) => a.dist - b.dist)
     .filter(s => {
-      if (seen.has(s.name)) return false;
-      seen.add(s.name);
+      if (seen.has(s.baseName)) return false;
+      seen.add(s.baseName);
       return true;
     })
     .slice(0, n);
@@ -167,7 +186,7 @@ function renderStopsList(nearStops) {
     li.className = 'stop-item' + (stop.id === selectedStopId ? ' active' : '');
     li.dataset.id = stop.id;
     li.innerHTML = `
-      <span class="stop-name">${stop.name}</span>
+      <span class="stop-name">${stop.baseName}</span>
       <span class="stop-dist">${formatDist(stop.dist)}</span>
     `;
     li.addEventListener('click', () => selectStop(stop));
@@ -177,10 +196,10 @@ function renderStopsList(nearStops) {
 
 function selectStop(stop) {
   selectedStopId = stop.id;
-  selectedStopName = stop.name;
+  selectedStopName = stop.baseName;
   // Update URL so it's copyable/shareable
   const url = new URL(location.href);
-  url.searchParams.set('stop', stop.name);
+  url.searchParams.set('stop', stop.baseName);
   history.replaceState(null, '', url.toString());
   // Highlight in list
   document.querySelectorAll('.stop-item').forEach(el => {
@@ -189,10 +208,10 @@ function selectStop(stop) {
   // Open popup on map
   const marker = stopMarkers.find(m => m.stopId === stop.id);
   if (marker) marker.openPopup();
-  // Show departures — merge all stops sharing this name (both directions)
-  document.getElementById('departuresTitle').textContent = stop.name;
+  // Show departures — merge all stops sharing this baseName (all platforms)
+  document.getElementById('departuresTitle').textContent = stop.baseName;
   document.getElementById('departuresPanel').hidden = false;
-  renderDepartures(stop.name, currentDay());
+  renderDepartures(stop.baseName, currentDay());
 }
 
 function currentDay() {
@@ -211,20 +230,21 @@ document.querySelectorAll('.day-btn').forEach(btn => {
 
 // ── Departures rendering ──────────────────────────────────────────────────────
 
-async function renderDepartures(stopName, dayType) {
+async function renderDepartures(stationName, dayType) {
   const container = document.getElementById('departuresContent');
   container.innerHTML = '<p class="empty-msg"><span class="spinner"></span> Laden…</p>';
 
-  const stopIds = stops.filter(s => s.name === stopName).map(s => s.id);
-  const scheds = await Promise.all(stopIds.map(id => loadStopSchedule(id)));
+  const stationStops = stops.filter(s => s.baseName === stationName);
+  const scheds = await Promise.all(stationStops.map(s => loadStopSchedule(s.id)));
 
-  // Merge and deduplicate
+  // Merge and deduplicate, tagging each departure with its platform
   const seen = new Set();
   let deps = [];
-  for (const sched of scheds) {
-    for (const dep of (sched[dayType] ?? [])) {
-      const key = `${dep.time}|${dep.line}|${dep.headsign}`;
-      if (!seen.has(key)) { seen.add(key); deps.push(dep); }
+  for (let i = 0; i < stationStops.length; i++) {
+    const platform = stationStops[i].platform;
+    for (const dep of (scheds[i][dayType] ?? [])) {
+      const key = `${dep.time}|${dep.line}|${dep.headsign}|${platform ?? ''}`;
+      if (!seen.has(key)) { seen.add(key); deps.push({ ...dep, platform }); }
     }
   }
   deps.sort((a, b) => a.time.localeCompare(b.time));
@@ -256,10 +276,10 @@ async function renderDepartures(stopName, dayType) {
     return;
   }
 
-  // Mark first departure as next
+  const hasPlatforms = deps.some(d => d.platform);
 
   let html = `<table class="dep-table">
-    <thead><tr><th>Tijd</th><th>Lijn</th><th>Maatschappij</th><th>Richting</th></tr></thead>
+    <thead><tr><th>Tijd</th><th>Lijn</th><th>Maatschappij</th><th>Richting</th>${hasPlatforms ? '<th>Perron</th>' : ''}</tr></thead>
     <tbody>`;
   deps.forEach((dep, i) => {
     const [h, m] = dep.time.split(':').map(Number);
@@ -279,6 +299,7 @@ async function renderDepartures(stopName, dayType) {
       <td class="dep-line-col">${lineLink}</td>
       <td class="dep-agency">${agencyLink}</td>
       <td class="dep-dest">${escHtml(dep.headsign)}</td>
+      ${hasPlatforms ? `<td class="dep-platform">${dep.platform ? escHtml(dep.platform) : ''}</td>` : ''}
     </tr>`;
   });
   html += '</tbody></table>';
@@ -314,10 +335,10 @@ function setupSearch() {
     const seen = new Set();
 
     const matchFn = (wordList) => stops.filter(s => {
-      const name = s.name.toLowerCase();
+      const name = s.baseName.toLowerCase();
       if (!wordList.every(w => name.includes(w))) return false;
-      if (seen.has(s.name)) return false;
-      seen.add(s.name);
+      if (seen.has(s.baseName)) return false;
+      seen.add(s.baseName);
       return true;
     });
 
@@ -359,9 +380,9 @@ function showAutocomplete(matches, input) {
   matches.forEach(stop => {
     const li = document.createElement('li');
     li.className = 'autocomplete-item';
-    li.textContent = stop.name;
+    li.textContent = stop.baseName;
     li.addEventListener('click', () => {
-      document.getElementById('searchInput').value = stop.name;
+      document.getElementById('searchInput').value = stop.baseName;
       hideAutocomplete();
       centreOnStop(stop);
     });
@@ -376,15 +397,15 @@ function hideAutocomplete() {
 }
 
 function centreOnStop(stop) {
-  // Find all stops sharing this name (different directions/platforms) plus their neighbours
-  const sameNameStops = stops.filter(s => s.name === stop.name);
+  // Find all stops sharing this baseName (different platforms) plus their neighbours
+  const sameNameStops = stops.filter(s => s.baseName === stop.baseName);
   const centerLat = sameNameStops.reduce((s, x) => s + x.lat, 0) / sameNameStops.length;
   const centerLon = sameNameStops.reduce((s, x) => s + x.lon, 0) / sameNameStops.length;
   const near = nearestStops(centerLat, centerLon, 8);
   currentNearStops = near;
   showContent(centerLat, centerLon, near);
-  // Auto-select first stop with this name
-  const first = near.find(s => s.name === stop.name) || near[0];
+  // Auto-select first stop with this baseName
+  const first = near.find(s => s.baseName === stop.baseName) || near[0];
   if (first) selectStop(first);
 }
 
@@ -468,10 +489,10 @@ async function init() {
     // Auto-navigate if ?stop=name is in URL (e.g. when arriving from route.html)
     const stopParam = new URLSearchParams(location.search).get('stop');
     if (stopParam) {
-      const match = stops.find(s => s.name === stopParam);
+      const match = stops.find(s => s.baseName === stopParam || s.name === stopParam);
       if (match) {
         hideStatus();
-        document.getElementById('searchInput').value = match.name;
+        document.getElementById('searchInput').value = match.baseName;
         centreOnStop(match);
       }
     }

@@ -16,6 +16,7 @@ Built on multiple GTFS feeds, currently covering:
 - 🔍 Search by stop name, station name, or city (multi-word autocomplete)
 - 🗓️ Day selector: Today / Mon–Fri / Saturday / Sunday
 - ⏱️ Today view shows only upcoming departures; next departure is highlighted
+- 🚉 Platform grouping: large stations (e.g. with platforms A/B/C) are shown as one entry; a **Platform** column appears in the departure table when relevant
 - 🗺️ Click the map button on any departure to draw its route on the map
 - 📦 No backend — works on GitHub Pages or any static host
 
