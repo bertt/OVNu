@@ -38,18 +38,27 @@ async function loadData() {
     renderFeedsInfo(feedsInfo);
   }
 
-  // Detect platform letters (e.g. "Ede, Station Ede-Wageningen A" → baseName + platform).
+  // Detect platform letters in two naming conventions:
+  //   "Name A"       (single trailing letter)
+  //   "Name [ A ]"   (letter in brackets, used by e.g. NS/Arriva train stations)
   // Only activate when ≥2 stops share the same tentative baseName (avoids false positives).
+  function parsePlatform(name) {
+    let m = name.match(/^(.+?)\s+\[\s*([A-Z0-9]+)\s*\]$/);
+    if (m) return { baseName: m[1], platform: m[2] };
+    m = name.match(/^(.+)\s+([A-Z])$/);
+    if (m) return { baseName: m[1], platform: m[2] };
+    return null;
+  }
   const baseCount = new Map();
   for (const s of stops) {
-    const m = s.name.match(/^(.+)\s+([A-Z])$/);
-    if (m) baseCount.set(m[1], (baseCount.get(m[1]) || 0) + 1);
+    const p = parsePlatform(s.name);
+    if (p) baseCount.set(p.baseName, (baseCount.get(p.baseName) || 0) + 1);
   }
   for (const s of stops) {
-    const m = s.name.match(/^(.+)\s+([A-Z])$/);
-    if (m && (baseCount.get(m[1]) || 0) >= 2) {
-      s.baseName = m[1];
-      s.platform = m[2];
+    const p = parsePlatform(s.name);
+    if (p && (baseCount.get(p.baseName) || 0) >= 2) {
+      s.baseName = p.baseName;
+      s.platform = p.platform;
     } else {
       s.baseName = s.name;
       s.platform = null;
