@@ -422,12 +422,16 @@ async function main() {
       const lat = Math.round(parseFloat(s.stop_lat) * 100000) / 100000;
       const lon = Math.round(parseFloat(s.stop_lon) * 100000) / 100000;
       if (isNaN(lat) || isNaN(lon)) return null;
+      const feedName = id.slice(0, id.indexOf(':'));
+      const parentId = s.parent_station ? `${feedName}:${s.parent_station}` : null;
+      const parentStop = parentId ? allStopMap.get(parentId) : null;
       return {
         id,
         name: s.stop_name,
         lat,
         lon,
-        town: s.stop_name.includes(',') ? s.stop_name.split(',')[0].trim() : s.stop_name
+        town: s.stop_name.includes(',') ? s.stop_name.split(',')[0].trim() : s.stop_name,
+        parentName: parentStop?.stop_name ?? null
       };
     })
     .filter(Boolean);

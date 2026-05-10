@@ -41,7 +41,7 @@ async function loadData() {
   // Detect platform letters in two naming conventions:
   //   "Name A"       (single trailing letter)
   //   "Name [ A ]"   (letter in brackets, used by e.g. NS/Arriva train stations)
-  // Only activate when ≥2 stops share the same tentative baseName (avoids false positives).
+  // Grouping priority: GTFS parent_station (parentName field) > regex heuristic.
   function parsePlatform(name) {
     let m = name.match(/^(.+?)\s+\[\s*([A-Z0-9]+)\s*\]$/);
     if (m) return { baseName: m[1], platform: m[2] };
@@ -49,19 +49,28 @@ async function loadData() {
     if (m) return { baseName: m[1], platform: m[2] };
     return null;
   }
+  // Regex fallback: count only for stops without a GTFS parent station
   const baseCount = new Map();
   for (const s of stops) {
+    if (s.parentName) continue;
     const p = parsePlatform(s.name);
     if (p) baseCount.set(p.baseName, (baseCount.get(p.baseName) || 0) + 1);
   }
   for (const s of stops) {
-    const p = parsePlatform(s.name);
-    if (p && (baseCount.get(p.baseName) || 0) >= 2) {
-      s.baseName = p.baseName;
-      s.platform = p.platform;
+    if (s.parentName) {
+      // Use the GTFS parent station name for grouping
+      s.baseName = s.parentName;
+      const p = parsePlatform(s.name);
+      s.platform = p ? p.platform : null;
     } else {
-      s.baseName = s.name;
-      s.platform = null;
+      const p = parsePlatform(s.name);
+      if (p && (baseCount.get(p.baseName) || 0) >= 2) {
+        s.baseName = p.baseName;
+        s.platform = p.platform;
+      } else {
+        s.baseName = s.name;
+        s.platform = null;
+      }
     }
   }
 
