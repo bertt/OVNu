@@ -279,7 +279,7 @@ async function renderDepartures(stationName, dayType) {
   const hasPlatforms = deps.some(d => d.platform);
 
   let html = `<table class="dep-table">
-    <thead><tr><th>Tijd</th><th>Lijn</th><th>Maatschappij</th><th>Richting</th>${hasPlatforms ? '<th>Perron</th>' : ''}</tr></thead>
+    <thead><tr><th>Tijd</th><th>Lijn</th>${hasPlatforms ? '<th>Perron</th>' : ''}<th>Richting</th><th>Maatschappij</th></tr></thead>
     <tbody>`;
   deps.forEach((dep, i) => {
     const [h, m] = dep.time.split(':').map(Number);
@@ -297,9 +297,9 @@ async function renderDepartures(stationName, dayType) {
     html += `<tr class="${cls}">
       <td class="dep-time">${displayTime}</td>
       <td class="dep-line-col">${lineLink}</td>
-      <td class="dep-agency">${agencyLink}</td>
-      <td class="dep-dest">${escHtml(dep.headsign)}</td>
       ${hasPlatforms ? `<td class="dep-platform">${dep.platform ? escHtml(dep.platform) : ''}</td>` : ''}
+      <td class="dep-dest">${escHtml(dep.headsign)}</td>
+      <td class="dep-agency">${agencyLink}</td>
     </tr>`;
   });
   html += '</tbody></table>';
