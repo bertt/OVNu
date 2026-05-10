@@ -431,7 +431,8 @@ async function main() {
         lat,
         lon,
         town: s.stop_name.includes(',') ? s.stop_name.split(',')[0].trim() : s.stop_name,
-        parentName: parentStop?.stop_name ?? null
+        parentName: parentStop?.stop_name ?? null,
+        platformCode: s.platform_code || null
       };
     })
     .filter(Boolean);

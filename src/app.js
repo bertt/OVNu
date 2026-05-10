@@ -60,8 +60,13 @@ async function loadData() {
     if (s.parentName) {
       // Use the GTFS parent station name for grouping
       s.baseName = s.parentName;
-      const p = parsePlatform(s.name);
-      s.platform = p ? p.platform : null;
+      // Prefer explicit platform_code; fall back to extracting from stop name
+      if (s.platformCode) {
+        s.platform = s.platformCode;
+      } else {
+        const p = parsePlatform(s.name);
+        s.platform = p ? p.platform : null;
+      }
     } else {
       const p = parsePlatform(s.name);
       if (p && (baseCount.get(p.baseName) || 0) >= 2) {
