@@ -5,6 +5,8 @@ A fully static, client-side website that uses your location (or a search query) 
 Built on the Dutch GTFS feed, currently covering:
 - 🇳🇱 **Netherlands** — [OVapi](https://gtfs.ovapi.nl), all 40 NL operators (NS, GVB, RET, HTM, U-OV, Connexxion, Arriva, Qbuzz, MeerPlus, and more)
 
+Blog see https://bertt.wordpress.com/2026/05/11/gtfs-public-transport-data-as-a-standard/
+
 ## 🌐 Live
 
 👉 **[https://bertt.github.io/OVNu/](https://bertt.github.io/OVNu/)**
