@@ -229,8 +229,9 @@ async function processFeed(feed, shared) {
   }
   log(`[${feed.name}] ${candidateTripIds.size} candidate trips for route-stop selection`);
 
-  // 6. Stream stop_times — build schedules AND count max stop_sequence per candidate trip
+  // 6. Stream stop_times — single pass: build schedules + collect route stop sequences
   const candidateMaxSeq = new Map(); // trip_id → highest stop_sequence seen
+  const candidateStops  = new Map(); // trip_id → [[seq, stopId], ...]
   log(`[${feed.name}] Streaming stop_times.txt...`);
   const rowCount = await streamCsv('stop_times.txt', extractDir, (st) => {
     const trip = tripMap.get(st.trip_id);
@@ -238,11 +239,13 @@ async function processFeed(feed, shared) {
     const route = routeMap.get(trip.route_id);
     if (!route) return;
 
-    // Track the highest stop_sequence per candidate to find the longest trip later.
+    // Collect stop sequences for candidate trips (used for route-stop lists).
     if (candidateTripIds.has(st.trip_id)) {
       const seq = parseInt(st.stop_sequence);
       const cur = candidateMaxSeq.get(st.trip_id) || 0;
       if (seq > cur) candidateMaxSeq.set(st.trip_id, seq);
+      if (!candidateStops.has(st.trip_id)) candidateStops.set(st.trip_id, []);
+      candidateStops.get(st.trip_id).push([seq, st.stop_id]);
     }
 
     const dayTypes = serviceDay.get(trip.service_id);
@@ -268,26 +271,20 @@ async function processFeed(feed, shared) {
   log(`[${feed.name}] ${rowCount.toLocaleString()} stop_times rows processed`);
 
   // Select the representative per direction: the trip with the most stops.
-  const repTripKey = new Map(); // "route_id|dir" → best trip_id
+  const repTripKey  = new Map(); // "route_id|dir" → best trip_id
+  const repTripStops = new Map(); // trip_id → [[seq, stopId], ...]
   for (const [key, candidates] of repTripCandidates) {
     let bestTrip = null, bestCount = -1;
     for (const tid of candidates) {
       const count = candidateMaxSeq.get(tid) || 0;
       if (count > bestCount) { bestCount = count; bestTrip = tid; }
     }
-    if (bestTrip) repTripKey.set(key, bestTrip);
+    if (bestTrip) {
+      repTripKey.set(key, bestTrip);
+      repTripStops.set(bestTrip, candidateStops.get(bestTrip) || []);
+    }
   }
-  const repTripIds   = new Set(repTripKey.values());
-  const repTripStops = new Map();
   log(`[${feed.name}] ${repTripKey.size} representative trips selected (most stops per direction)`);
-
-  // Pass 2 (lightweight): collect full stop sequences only for the selected representatives.
-  log(`[${feed.name}] Collecting stop sequences for representative trips...`);
-  await streamCsv('stop_times.txt', extractDir, (st) => {
-    if (!repTripIds.has(st.trip_id)) return;
-    if (!repTripStops.has(st.trip_id)) repTripStops.set(st.trip_id, []);
-    repTripStops.get(st.trip_id).push([parseInt(st.stop_sequence), st.stop_id]);
-  });
 
   // 7. Sort + deduplicate per stop
   for (const sid of Object.keys(schedule)) {
