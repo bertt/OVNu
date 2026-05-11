@@ -249,10 +249,8 @@ function selectStop(stop) {
   url.searchParams.set('stop_id', stop.id);
   url.searchParams.delete('stop');
   history.replaceState(null, '', url.toString());
-  // Highlight in sidebar list
-  document.querySelectorAll('.stop-item').forEach(el => {
-    el.classList.toggle('active', el.dataset.id === stop.id);
-  });
+  // Refresh nearby stops list centred on this stop (active state set inside renderStopsList)
+  renderStopsList(nearestStops(stop.lat, stop.lon, 8));
   // Open popup on map marker if visible
   viewportMarkerById[stop.id]?.openPopup();
   // Show departures — merge all stops sharing this baseName (all platforms)
