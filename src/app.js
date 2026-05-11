@@ -149,9 +149,19 @@ function timeToMinutes(t) {
 
 // ── Map ───────────────────────────────────────────────────────────────────────
 
+const VIEWPORT_ZOOM_THRESHOLD = 13;
+
 let map = null;
 let userMarker = null;
-let stopMarkers = [];
+let viewportStopMarkers = [];
+let viewportMarkerById  = {}; // stop.id → Leaflet marker
+
+const busIcon = L.divIcon({
+  html: '<span style="font-size:18px;line-height:24px;display:block;text-align:center;font-family:\'Segoe UI Emoji\',\'Apple Color Emoji\',sans-serif;">🚏</span>',
+  className: '',
+  iconSize: [24, 24],
+  iconAnchor: [12, 12]
+});
 
 function initMap(lat, lon, zoom = 15) {
   if (!map) {
@@ -160,36 +170,50 @@ function initMap(lat, lon, zoom = 15) {
       attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
       maxZoom: 19
     }).addTo(map);
+    map.on('moveend', updateViewportMarkers);
   } else {
     map.setView([lat, lon], zoom);
   }
 }
 
-function updateMapMarkers(userLat, userLon, nearStops) {
-  // User marker
-  if (userMarker) userMarker.remove();
-  userMarker = L.circleMarker([userLat, userLon], {
-    radius: 9, fillColor: '#1a56db', color: '#fff', weight: 2, fillOpacity: 1
-  }).addTo(map).bindPopup('Jouw locatie');
+function updateViewportMarkers() {
+  // Remove old viewport markers
+  viewportStopMarkers.forEach(m => m.remove());
+  viewportStopMarkers = [];
+  viewportMarkerById  = {};
 
-  // Remove old stop markers
-  stopMarkers.forEach(m => m.remove());
-  stopMarkers = [];
+  if (!map || !dataLoaded || map.getZoom() < VIEWPORT_ZOOM_THRESHOLD) return;
 
-  const busIcon = L.divIcon({
-    html: '<span style="font-size:18px;line-height:24px;display:block;text-align:center;font-family:\'Segoe UI Emoji\',\'Apple Color Emoji\',sans-serif;">🚏</span>',
-    className: '',
-    iconSize: [24, 24],
-    iconAnchor: [12, 12]
-  });
+  const bounds = map.getBounds();
+  const south = bounds.getSouth(), north = bounds.getNorth();
+  const west  = bounds.getWest(),  east  = bounds.getEast();
 
-  nearStops.forEach(stop => {
+  // Collect stops in bounds, deduplicated by baseName
+  const seen = new Set();
+  const inBounds = [];
+  for (const s of stops) {
+    if (s.lat < south || s.lat > north || s.lon < west || s.lon > east) continue;
+    if (seen.has(s.baseName)) continue;
+    seen.add(s.baseName);
+    inBounds.push(s);
+    if (inBounds.length >= 400) break;
+  }
+
+  for (const stop of inBounds) {
     const m = L.marker([stop.lat, stop.lon], { icon: busIcon })
       .addTo(map)
-      .bindPopup(`<strong>${stop.name}</strong><br>${formatDist(stop.dist)} weg`);
-    m.stopId = stop.id;
-    stopMarkers.push(m);
-  });
+      .bindPopup(`<strong>${stop.baseName}</strong>`, { autoPan: false });
+    m.on('click', () => selectStop(stop));
+    viewportStopMarkers.push(m);
+    viewportMarkerById[stop.id] = m;
+  }
+}
+
+function updateUserMarker(lat, lon) {
+  if (userMarker) userMarker.remove();
+  userMarker = L.circleMarker([lat, lon], {
+    radius: 9, fillColor: '#1a56db', color: '#fff', weight: 2, fillOpacity: 1
+  }).addTo(map).bindPopup('Jouw locatie');
 }
 
 function formatDist(km) {
@@ -220,17 +244,17 @@ function renderStopsList(nearStops) {
 function selectStop(stop) {
   selectedStopId = stop.id;
   selectedStopName = stop.baseName;
-  // Update URL so it's copyable/shareable
+  // Update URL — use stop_id so the exact stop is preserved when sharing/navigating back
   const url = new URL(location.href);
-  url.searchParams.set('stop', stop.baseName);
+  url.searchParams.set('stop_id', stop.id);
+  url.searchParams.delete('stop');
   history.replaceState(null, '', url.toString());
-  // Highlight in list
+  // Highlight in sidebar list
   document.querySelectorAll('.stop-item').forEach(el => {
     el.classList.toggle('active', el.dataset.id === stop.id);
   });
-  // Open popup on map
-  const marker = stopMarkers.find(m => m.stopId === stop.id);
-  if (marker) marker.openPopup();
+  // Open popup on map marker if visible
+  viewportMarkerById[stop.id]?.openPopup();
   // Show departures — merge all stops sharing this baseName (all platforms)
   document.getElementById('departuresTitle').textContent = stop.baseName;
   document.getElementById('departuresPanel').hidden = false;
@@ -479,10 +503,10 @@ function setupGps() {
 function showContent(lat, lon, nearStops) {
   document.getElementById('contentGrid').hidden = false;
   initMap(lat, lon);
-  updateMapMarkers(lat, lon, nearStops);
+  updateUserMarker(lat, lon);
   renderStopsList(nearStops);
-  // Trigger map resize in case the container was hidden
-  setTimeout(() => map?.invalidateSize(), 100);
+  // Trigger map resize then update viewport markers (zoom is 15 so stops will show)
+  setTimeout(() => { map?.invalidateSize(); updateViewportMarkers(); }, 100);
 }
 
 function showStatus(html, type = '') {
