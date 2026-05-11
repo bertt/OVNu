@@ -311,8 +311,9 @@ async function renderDepartures(stationName, dayType) {
     const cls = i === 0 && isToday ? 'next-up' : '';
     const agInfo = dep.agency ? agencyByRawId[dep.agency] : null;
     const agencyName = agInfo ? agInfo.name : (dep.agency || '');
+    const stopIdSuffix = selectedStopId ? `&stop_id=${encodeURIComponent(selectedStopId)}` : '';
     const lineLink = dep.route_id
-      ? `<a href="route?id=${encodeURIComponent(dep.route_id)}&line=${encodeURIComponent(dep.line)}&agency=${encodeURIComponent(agencyName)}&type=3" class="dep-link">${escHtml(dep.line)}</a>`
+      ? `<a href="route?id=${encodeURIComponent(dep.route_id)}&line=${encodeURIComponent(dep.line)}&agency=${encodeURIComponent(agencyName)}&type=3${stopIdSuffix}" class="dep-link">${escHtml(dep.line)}</a>`
       : escHtml(dep.line);
     const agencyLink = agencyName
       ? `<a href="lines?agency=${encodeURIComponent(agencyName)}" class="dep-link">${escHtml(agencyName)}</a>`
@@ -509,15 +510,17 @@ async function init() {
     showStatus(`✅ ${stops.length.toLocaleString('nl-NL')} haltes geladen. Druk op 📍 of zoek op naam.`, 'info');
     setTimeout(hideStatus, 4000);
 
-    // Auto-navigate if ?stop=name is in URL (e.g. when arriving from route.html)
-    const stopParam = new URLSearchParams(location.search).get('stop');
-    if (stopParam) {
-      const match = stops.find(s => s.baseName === stopParam || s.name === stopParam);
-      if (match) {
-        hideStatus();
-        document.getElementById('searchInput').value = match.baseName;
-        centreOnStop(match);
-      }
+    // Auto-navigate if ?stop=name or ?stop_id=id is in URL (e.g. when arriving from route.html)
+    const urlParams = new URLSearchParams(location.search);
+    const stopParam = urlParams.get('stop');
+    const stopIdParam = urlParams.get('stop_id');
+    const match = stopIdParam
+      ? stops.find(s => s.id === stopIdParam)
+      : stopParam ? stops.find(s => s.baseName === stopParam || s.name === stopParam) : null;
+    if (match) {
+      hideStatus();
+      document.getElementById('searchInput').value = match.baseName;
+      centreOnStop(match);
     }
   } catch (err) {
     showStatus(`❌ Fout bij laden data: ${err.message}. Controleer of je de build-stap hebt uitgevoerd (npm run build).`, 'error');

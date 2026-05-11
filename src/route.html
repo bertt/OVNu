@@ -91,6 +91,23 @@
     }
     .back-link:hover { text-decoration: underline; }
     .error-msg { color: #e53e3e; padding: 1rem 0; }
+
+    .selected-stop-info {
+      background: var(--blue-light);
+      border-left: 4px solid var(--blue);
+      border-radius: var(--radius) var(--radius) 0 0;
+      padding: .5rem .85rem;
+      font-size: .9rem;
+      font-weight: 600;
+      color: var(--blue-dark, #1e3a8a);
+    }
+    .selected-stop-info span { font-weight: 400; color: var(--gray-700); margin-left: .4rem; }
+
+    .stop-line-item.selected {
+      background: var(--blue-light);
+      border-left-color: var(--blue);
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
@@ -105,7 +122,7 @@
   </header>
 
   <main style="max-width:1100px;margin:0 auto;padding:1.2rem 1rem 2rem">
-    <a href="lines" class="back-link">← Terug naar alle lijnen</a>
+    <a id="backLink" href="./" class="back-link">← Terug</a>
 
     <div id="routeHeader" class="route-header"></div>
     <div id="dirTabs" class="dir-tabs" hidden></div>
@@ -115,7 +132,10 @@
         <h3 id="stopCount"></h3>
         <ul id="stopList" class="stop-line-list"></ul>
       </div>
-      <div id="routeMap"></div>
+      <div>
+        <div id="selectedStopInfo" class="selected-stop-info" hidden></div>
+        <div id="routeMap"></div>
+      </div>
     </div>
 
     <div id="errorMsg" class="error-msg" hidden></div>
@@ -135,8 +155,19 @@
     const routeId = params.get('id');
     const line    = params.get('line') || '';
     const agency  = params.get('agency') || '';
+    const stopId  = params.get('stop_id') || null;
 
     document.title = `OVNu – Lijn ${line}`;
+
+    // Set back link: to main page, preserving stop context if available
+    const backLink = document.getElementById('backLink');
+    if (stopId) {
+      backLink.href = `./?stop_id=${encodeURIComponent(stopId)}`;
+      backLink.textContent = '← Terug naar halte';
+    } else {
+      backLink.href = './';
+      backLink.textContent = '← Terug';
+    }
 
     let map = null;
     let markersLayer = null;
@@ -168,9 +199,10 @@
 
       stops.forEach(stop => {
         const li = document.createElement('li');
-        li.className = 'stop-line-item';
+        li.className = 'stop-line-item' + (stop.id === stopId ? ' selected' : '');
+        li.dataset.stopId = stop.id;
         li.innerHTML = `<span class="stop-dot"></span>
-          <a class="stop-link" href="./?stop=${encodeURIComponent(stop.name)}"
+          <a class="stop-link" href="./?stop_id=${encodeURIComponent(stop.id)}"
              title="Bekijk vertrektijden">${escHtml(stop.name)}</a>`;
         li.addEventListener('click', e => {
           if (e.target.tagName !== 'A') {
@@ -220,6 +252,29 @@
       return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     }
 
+    function highlightStop(stopData) {
+      // Show stop name above the map
+      const infoEl = document.getElementById('selectedStopInfo');
+      infoEl.innerHTML = `🚏 <strong>${escHtml(stopData.name)}</strong>`;
+      infoEl.hidden = false;
+
+      // Highlight in list and scroll into view
+      document.querySelectorAll('.stop-line-item').forEach(li => {
+        li.classList.toggle('selected', li.dataset.stopId === stopData.id);
+      });
+      document.querySelector(`.stop-line-item[data-stop-id="${CSS.escape(stopData.id)}"]`)
+        ?.scrollIntoView({ block: 'nearest' });
+
+      // Center map on the stop and show popup
+      if (map) {
+        map.setView([stopData.lat, stopData.lon], 15);
+        L.popup()
+          .setLatLng([stopData.lat, stopData.lon])
+          .setContent(`<strong>${escHtml(stopData.name)}</strong>`)
+          .openOn(map);
+      }
+    }
+
     async function load() {
       if (!routeId) throw new Error('Geen route_id opgegeven in URL.');
       // routeId is "feed:localId" (e.g. "nl:127769") → path "feed/localId"
@@ -257,6 +312,20 @@
       }
 
       renderStops(dirs[0]);
+
+      // If a stop_id was given, find it (possibly in another direction) and highlight it
+      if (stopId) {
+        let foundStop = null;
+        let foundDir = dirs[0];
+        for (const d of dirs) {
+          const s = routeData[d].find(s => s.id === stopId);
+          if (s) { foundStop = s; foundDir = d; break; }
+        }
+        if (foundStop) {
+          if (foundDir !== dirs[0]) renderStops(foundDir);
+          highlightStop(foundStop);
+        }
+      }
 
     } catch (err) {
       const el = document.getElementById('errorMsg');
