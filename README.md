@@ -2,9 +2,8 @@
 
 A fully static, client-side website that uses your location (or a search query) to find the nearest public transit stops and show upcoming departures. No server required — runs entirely in the browser.
 
-Built on multiple GTFS feeds, currently covering:
+Built on the Dutch GTFS feed, currently covering:
 - 🇳🇱 **Netherlands** — [OVapi](https://gtfs.ovapi.nl), all 40 NL operators (NS, GVB, RET, HTM, U-OV, Connexxion, Arriva, Qbuzz, MeerPlus, and more)
-- 🇧🇪 **Belgium (De Lijn)** — all Flemish bus and tram services
 
 ## 🌐 Live
 
@@ -17,20 +16,18 @@ Built on multiple GTFS feeds, currently covering:
 - 🗓️ Day selector: Today / Mon–Fri / Saturday / Sunday
 - ⏱️ Today view shows only upcoming departures; next departure is highlighted
 - 🚉 Platform grouping: large stations (e.g. with platforms A/B/C) are shown as one entry; a **Platform** column appears in the departure table when relevant
-- 🗺️ Click the map button on any departure to draw its route on the map
+- 🗺️ Click any line in the departure table to view the full route on a map; if arriving from a stop the selected stop is highlighted and shown above the map with a link back
 - 📦 No backend — works on GitHub Pages or any static host
 
 ## Data
 
-| File | Contents | Size (NL only) |
+| File | Contents | Size |
 |---|---|---|
 | `data/stops.json` | 78,000+ stops & stations with coordinates | ~6 MB |
-| `data/schedules/{feed}/{stop_id}.json` | Per-stop departures (time, line, headsign, shape) | ~62,000 files |
-| `data/shapes/{feed}/{shape_id}.json` | Route polylines as `[[lat,lon],…]` | ~9,500 files |
+| `data/schedules/{stop_id}.json` | Per-stop departures (time, line, headsign) | ~62,000 files |
+| `data/route-stops/{route_id}.json` | Ordered stop list per route direction | ~8,000 files |
 
-Stop IDs in `stops.json` are namespaced with the feed name (e.g. `nl:12345`, `be-delijn:67890`). The file paths use the same namespace as a subdirectory (`schedules/nl/12345.json`).
-
-The `data/` folder is **not committed to git** — it is generated fresh each week by the GitHub Actions workflow from the latest GTFS feeds.
+Stop IDs and route IDs in all data files are plain GTFS IDs (e.g. `3517780`, `106131`) — no feed prefix. The `data/` folder is **not committed to git** — it is generated fresh each week by the GitHub Actions workflow from the latest GTFS feed.
 
 ## Local development
 
@@ -42,11 +39,11 @@ The `data/` folder is **not committed to git** — it is generated fresh each we
 
 ```bash
 npm install
-npm run build   # downloads all GTFS feeds and generates data/
+npm run build   # downloads the GTFS feed and generates data/
 npm run serve   # starts local server → http://localhost:3000/src/
 ```
 
-Each feed is cached separately (e.g. `build/gtfs-nl.zip`, `build/gtfs-be-delijn.zip`). Delete a zip to force a fresh download for that feed.
+The feed zip is cached at `build/gtfs-nl.zip`. Delete it to force a fresh download.
 
 ## GitHub Pages deployment
 
@@ -60,20 +57,18 @@ The workflow runs automatically every **Monday at 04:00 UTC** to pick up updated
 
 ## Configuring feeds
 
-Feeds are defined in `build/feeds.json`. Each entry has a `name` (used as the ID prefix and cache filename), a human-readable `label`, and a `url`:
+The feed is defined in `build/feeds.json`:
 
 ```json
 [
-  { "name": "nl",       "label": "🇳🇱 Netherlands (OVapi)", "url": "https://gtfs.ovapi.nl/nl/gtfs-nl.zip" },
-  { "name": "be-delijn","label": "🇧🇪 Belgium – De Lijn",   "url": "https://data.gtfs.be/delijn/gtfs/be-delijn-gtfs.zip" }
+  { "name": "nl", "label": "🇳🇱 Netherlands (OVapi)", "url": "https://gtfs.ovapi.nl/nl/gtfs-nl.zip" }
 ]
 ```
 
-To add a new feed, append an entry to `feeds.json` and run `npm run build`. The build script automatically handles both `calendar.txt` and `calendar_dates.txt` service definitions.
+To add a feed, append an entry to `feeds.json` and run `npm run build`. The build script handles both `calendar.txt` and `calendar_dates.txt` service definitions.
 
 Popular GTFS sources:
 - 🇳🇱 Netherlands (all operators): `https://gtfs.ovapi.nl/nl/gtfs-nl.zip`
-- 🇧🇪 Belgium – De Lijn: `https://data.gtfs.be/delijn/gtfs/be-delijn-gtfs.zip`
 - 🌍 Many countries: [transitfeeds.com](https://transitfeeds.com) / [mobilitydatabase.org](https://mobilitydatabase.org)
 
 ## Project structure
@@ -84,17 +79,18 @@ OVNu/
 │   └── workflows/
 │       └── deploy.yml        ← weekly build + GitHub Pages deploy
 ├── build/
-│   ├── feeds.json            ← list of GTFS feeds to process
+│   ├── feeds.json            ← GTFS feed definition
 │   └── process-gtfs.js       ← GTFS download, streaming pipeline, data generation
 ├── src/
-│   ├── index.html
+│   ├── index.html            ← main page (stop search + departures)
 │   ├── app.js                ← all client-side logic
+│   ├── route.html            ← route map page (stop list + map)
+│   ├── lines.html            ← all lines overview
 │   └── style.css
 ├── data/                     ← generated (not in git)
 │   ├── stops.json
-│   ├── routes.json
-│   ├── schedules/            ← per-stop JSON files (nl/*, be-delijn/*, …)
-│   └── shapes/               ← route shape files  (nl/*, be-delijn/*, …)
+│   ├── schedules/            ← per-stop JSON files ({stop_id}.json)
+│   └── route-stops/          ← per-route JSON files ({route_id}.json)
 ├── index.html                ← root redirect to src/
 └── package.json
 ```

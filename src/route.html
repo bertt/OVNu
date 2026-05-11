@@ -183,7 +183,7 @@
       markersLayer = L.layerGroup().addTo(map);
     }
 
-    function renderStops(dirId) {
+    function renderStops(dirId, skipFitBounds = false) {
       currentDir = dirId;
       const stops = routeData[dirId] || [];
 
@@ -245,7 +245,9 @@
         }).addTo(markersLayer).bindPopup(`<strong>${s.name}</strong>`);
       });
 
-      map.fitBounds(L.latLngBounds(latlngs), { padding: [30, 30] });
+      if (!skipFitBounds) {
+        map.fitBounds(L.latLngBounds(latlngs), { padding: [30, 30] });
+      }
     }
 
     function escHtml(s) {
@@ -262,7 +264,8 @@
       document.querySelectorAll('.stop-line-item').forEach(li => {
         li.classList.toggle('selected', li.dataset.stopId === stopData.id);
       });
-      document.querySelector(`.stop-line-item[data-stop-id="${CSS.escape(stopData.id)}"]`)
+      [...document.querySelectorAll('.stop-line-item')]
+        .find(li => li.dataset.stopId === stopData.id)
         ?.scrollIntoView({ block: 'nearest' });
 
       // Center map on the stop and show popup
@@ -278,7 +281,7 @@
     async function load() {
       if (!routeId) throw new Error('Geen route_id opgegeven in URL.');
       // routeId is "feed:localId" (e.g. "nl:127769") → path "feed/localId"
-      const res = await fetch(`../data/route-stops/${routeId.replace(':', '/')}.json`);
+      const res = await fetch(`../data/route-stops/${routeId}.json`);
       if (!res.ok) throw new Error(`Route ${routeId} niet gevonden (${res.status}).`);
       return res.json();
     }
@@ -311,7 +314,7 @@
         });
       }
 
-      renderStops(dirs[0]);
+      renderStops(dirs[0], !!stopId);
 
       // If a stop_id was given, find it (possibly in another direction) and highlight it
       if (stopId) {
@@ -322,7 +325,7 @@
           if (s) { foundStop = s; foundDir = d; break; }
         }
         if (foundStop) {
-          if (foundDir !== dirs[0]) renderStops(foundDir);
+          if (foundDir !== dirs[0]) renderStops(foundDir, true);
           highlightStop(foundStop);
         }
       }

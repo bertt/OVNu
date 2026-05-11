@@ -93,7 +93,7 @@ function renderFeedsInfo(feedsInfo) {
 async function loadStopSchedule(stopId) {
   if (scheduleCache[stopId]) return scheduleCache[stopId];
   // stopId is "feed:localId" (e.g. "nl:3517780") → path "feed/localId"
-  const res = await fetch(`../data/schedules/${stopId.replace(':', '/')}.json`);
+  const res = await fetch(`../data/schedules/${stopId}.json`);
   if (!res.ok) return { weekday: [], saturday: [], sunday: [] };
   scheduleCache[stopId] = await res.json();
   return scheduleCache[stopId];
