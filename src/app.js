@@ -255,6 +255,15 @@ function selectStop(stop) {
   if (map) {
     map.setView([stop.lat, stop.lon], Math.max(map.getZoom(), VIEWPORT_ZOOM_THRESHOLD), { animate: false });
     updateViewportMarkers();
+    // Deduplication may have skipped this exact stop — ensure it always has a marker
+    if (!viewportMarkerById[stop.id]) {
+      const m = L.marker([stop.lat, stop.lon], { icon: busIcon })
+        .addTo(map)
+        .bindPopup(`<strong>${stop.baseName}</strong>`, { autoPan: false });
+      m.on('click', () => selectStop(stop));
+      viewportStopMarkers.push(m);
+      viewportMarkerById[stop.id] = m;
+    }
   }
   // Open popup on map marker
   viewportMarkerById[stop.id]?.openPopup();
