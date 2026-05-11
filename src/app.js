@@ -251,7 +251,12 @@ function selectStop(stop) {
   history.replaceState(null, '', url.toString());
   // Refresh nearby stops list centred on this stop (active state set inside renderStopsList)
   renderStopsList(nearestStops(stop.lat, stop.lon, 8));
-  // Open popup on map marker if visible
+  // Centre map on the selected stop and immediately refresh viewport markers
+  if (map) {
+    map.setView([stop.lat, stop.lon], Math.max(map.getZoom(), VIEWPORT_ZOOM_THRESHOLD), { animate: false });
+    updateViewportMarkers();
+  }
+  // Open popup on map marker
   viewportMarkerById[stop.id]?.openPopup();
   // Show departures — merge all stops sharing this baseName (all platforms)
   document.getElementById('departuresTitle').textContent = stop.baseName;
