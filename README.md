@@ -1,5 +1,7 @@
 # OVNu – Real-time departure times for bus, train & tram
 
+[![OVNu – Build & Deploy naar GitHub Pages](https://github.com/bertt/OVNu/actions/workflows/deploy.yml/badge.svg)](https://github.com/bertt/OVNu/actions/workflows/deploy.yml)
+
 A fully static, client-side website that uses your location (or a search query) to find the nearest public transit stops and show upcoming departures. No server required — runs entirely in the browser.
 
 Built on the Dutch GTFS feed, currently covering:
