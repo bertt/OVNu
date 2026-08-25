@@ -14,7 +14,7 @@
  * Stop IDs and shape IDs are plain GTFS IDs as provided by the feed.
  */
 
-import { createWriteStream, existsSync, readFileSync, writeFileSync, mkdirSync, createReadStream } from 'fs';
+import { createWriteStream, existsSync, readFileSync, writeFileSync, mkdirSync, createReadStream, rmSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { pipeline } from 'stream/promises';
@@ -68,8 +68,25 @@ async function download(feed) {
 
 const NEEDED = ['agency.txt','routes.txt','trips.txt','stops.txt','stop_times.txt','calendar.txt','calendar_dates.txt','shapes.txt'];
 
-function extractFiles(zip, extractDir) {
+function extractFiles(zip, extractDir, gtfsFile) {
   mkdirSync(extractDir, { recursive: true });
+
+  // Detect a stale extraction left over from a previous (older/different) zip
+  // download — without this, re-downloading the feed would silently keep
+  // using outdated extracted .txt files since they already exist on disk.
+  const marker = join(extractDir, '.zip-source');
+  const zipStat = statSync(gtfsFile);
+  const zipFingerprint = `${zipStat.size}:${zipStat.mtimeMs}`;
+  const prevFingerprint = existsSync(marker) ? readFileSync(marker, 'utf8') : null;
+  if (prevFingerprint !== zipFingerprint) {
+    if (prevFingerprint !== null) log('  Detected a different/updated GTFS zip — clearing stale extraction...');
+    for (const name of NEEDED) {
+      const dest = join(extractDir, name);
+      if (existsSync(dest)) rmSync(dest);
+    }
+    writeFileSync(marker, zipFingerprint);
+  }
+
   for (const name of NEEDED) {
     const dest = join(extractDir, name);
     if (existsSync(dest)) { log(`  ${name} already extracted`); continue; }
@@ -120,7 +137,7 @@ async function processFeed(feed, shared) {
   const zip = new AdmZip(gtfsFile);
 
   log(`[${feed.name}] Extracting files...`);
-  extractFiles(zip, extractDir);
+  extractFiles(zip, extractDir, gtfsFile);
 
   // 1. Agencies
   log(`[${feed.name}] Parsing agency.txt...`);
@@ -178,6 +195,38 @@ async function processFeed(feed, shared) {
   }
   log(`[${feed.name}] ${activeToday.size} services active today (${todayStr})`);
 
+  // 4c. Services active *yesterday* — needed for night trains: a trip that
+  // departs after midnight (e.g. 00:10) is often still part of yesterday's
+  // service_id, encoded with GTFS's "extended" times (24:10, 25:00, ...) so
+  // the whole overnight trip stays on one service day. Without this, those
+  // early-morning departures would be missing from today's schedule.
+  log(`[${feed.name}] Determining services active yesterday (for night trains)...`);
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayStr = `${yesterday.getFullYear()}${String(yesterday.getMonth() + 1).padStart(2, '0')}${String(yesterday.getDate()).padStart(2, '0')}`;
+  const yesterdayDowName = DOW[yesterday.getDay()];
+
+  const activeYesterday = new Set();
+  for (const row of calRows) {
+    if (!serviceIds.has(row.service_id)) continue;
+    if (row.start_date > yesterdayStr || row.end_date < yesterdayStr) continue;
+    if (row[yesterdayDowName] === '1') activeYesterday.add(row.service_id);
+  }
+  for (const row of calDates) {
+    if (!serviceIds.has(row.service_id) || row.date !== yesterdayStr) continue;
+    if (row.exception_type === '1') activeYesterday.add(row.service_id);
+    else if (row.exception_type === '2') activeYesterday.delete(row.service_id);
+  }
+  log(`[${feed.name}] ${activeYesterday.size} services active yesterday (${yesterdayStr})`);
+
+  // Shift a GTFS "extended" time (24:10:00 → 00:10:00) back by 24 hours so an
+  // overnight trip from yesterday's service lands on today's timeline.
+  function shiftTimeBackADay(t) {
+    const parts = t.split(':');
+    parts[0] = String(parseInt(parts[0], 10) - 24).padStart(2, '0');
+    return parts.join(':');
+  }
+
   // 5. Stops — build prefixed stop map
   log(`[${feed.name}] Parsing stops.txt...`);
   const allStops = parseSmall('stops.txt', extractDir);
@@ -224,7 +273,17 @@ async function processFeed(feed, shared) {
       candidateStops.get(st.trip_id).push([seq, st.stop_id]);
     }
 
-    if (!activeToday.has(trip.service_id)) return;
+    let departureTime = st.departure_time;
+    if (!activeToday.has(trip.service_id)) {
+      // Not active today — only keep it if it's an overnight continuation of
+      // yesterday's service (extended time >= 24:00:00), shifted onto today.
+      const hour = parseInt(departureTime.split(':')[0], 10);
+      if (activeYesterday.has(trip.service_id) && hour >= 24) {
+        departureTime = shiftTimeBackADay(departureTime);
+      } else {
+        return;
+      }
+    }
 
     // Skip stops where boarding is not allowed (drop-off only / terminus arrivals).
     // pickup_type=1 means "No pickup available" per the GTFS spec — these are not departures.
@@ -235,7 +294,7 @@ async function processFeed(feed, shared) {
     if (!schedule[stopId]) schedule[stopId] = [];
 
     const entry = {
-      time:     st.departure_time,
+      time:     departureTime,
       line:     route.route_short_name,
       headsign: trip.trip_headsign,
       agency:   routeAgency.get(trip.route_id) || '',
