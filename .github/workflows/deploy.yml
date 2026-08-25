@@ -1,9 +1,9 @@
 name: OVNu – Build & Deploy naar GitHub Pages
 
 on:
-  # Elke maandag om 04:00 UTC (feed wordt wekelijks bijgewerkt)
+  # Elke nacht om 03:30 UTC (feed wordt dagelijks bijgewerkt door OVapi om 03:00 UTC)
   schedule:
-    - cron: '0 4 * * 1'
+    - cron: '30 3 * * *'
   # Bij elke push naar main
   push:
     branches: [main]

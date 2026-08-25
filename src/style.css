@@ -33,6 +33,14 @@ header {
 }
 header h1 { font-size: 1.5rem; }
 header .subtitle { font-size: .9rem; opacity: .85; margin-top: .2rem; }
+.header-date {
+  font-size: .85rem;
+  white-space: nowrap;
+  border: 1px solid rgba(255,255,255,.5);
+  padding: .3rem .75rem;
+  border-radius: 20px;
+  text-transform: capitalize;
+}
 
 /* ── Main layout ──────────────────────────────────────────────────────────── */
 main {
@@ -156,19 +164,15 @@ main {
   border-bottom: 1px solid var(--gray-200);
 }
 .departures-header h2 { font-size: 1.1rem; }
-
-.day-selector { display: flex; gap: .4rem; flex-wrap: wrap; }
-.day-btn {
-  padding: .35rem .7rem;
-  border: 1.5px solid var(--gray-200);
-  border-radius: 20px;
-  background: #fff;
+.today-date {
   font-size: .82rem;
-  cursor: pointer;
-  transition: all .15s;
+  color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 12%, #fff);
+  padding: .3rem .7rem;
+  border-radius: 20px;
+  font-weight: 600;
+  text-transform: capitalize;
 }
-.day-btn:hover { border-color: var(--blue); color: var(--blue); }
-.day-btn.active { background: var(--blue); border-color: var(--blue); color: #fff; }
 
 /* ── Departure table ──────────────────────────────────────────────────────── */
 .departures-content { min-height: 60px; overflow-x: auto; }

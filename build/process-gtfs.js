@@ -1,18 +1,17 @@
 #!/usr/bin/env node
 /**
  * GTFS data processor for public transit stops.
- * Downloads one or more GTFS feeds (defined in feeds.json) and merges them into
- * a single set of static data files used by the client-side website.
+ * Downloads a single GTFS feed (defined in feed.json) and generates the
+ * static data files used by the client-side website.
  *
  * Output files in ../data/:
  *   stops.json         - [{id, name, lat, lon, town}]
  *   routes.json        - [{id, short_name, long_name}]
- *   schedules/{id}.json - {weekday:[], saturday:[], sunday:[]}  (per stop)
+ *   schedules/{id}.json - [{time, line, headsign, agency, route_id}, ...]  (per stop, today only)
  *   shapes/{id}.json    - [[lat,lon],...]                       (per shape)
  *   route-stops/{id}.json - {direction: [{id,name,lat,lon},...]}
  *
- * Stop IDs and shape IDs are prefixed with the feed name (e.g. "nl:12345")
- * to avoid collisions between feeds.
+ * Stop IDs and shape IDs are plain GTFS IDs as provided by the feed.
  */
 
 import { createWriteStream, existsSync, readFileSync, writeFileSync, mkdirSync, createReadStream } from 'fs';
@@ -25,7 +24,7 @@ import { parse as csvParseSync } from 'csv-parse/sync';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR   = join(__dirname, '..', 'data');
-const FEEDS_FILE = join(__dirname, 'feeds.json');
+const FEED_FILE  = join(__dirname, 'feed.json');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -149,61 +148,35 @@ async function processFeed(feed, shared) {
   const serviceIds = new Set(trips.map(t => t.service_id));
   log(`[${feed.name}] ${trips.length} trips, ${serviceIds.size} service_ids`);
 
-  // 4. Classify service_ids → day types
-  log(`[${feed.name}] Classifying service days...`);
-  const today = new Date();
-  const sixMonthsOn = new Date(today);
-  sixMonthsOn.setMonth(sixMonthsOn.getMonth() + 6);
+  // 4. Determine which service_ids are active *today* only (build runs nightly,
+  // so we only ever need "today" — no more weekday/saturday/sunday bucketing).
+  log(`[${feed.name}] Determining services active today...`);
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  const DOW = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+  const todayDowName = DOW[now.getDay()];
 
-  const serviceDayCounts = new Map(); // service_id → {weekday, saturday, sunday}
+  const activeToday = new Set();
 
-  // 4a. calendar.txt (standard weekly schedule, if present)
+  // 4a. calendar.txt — regular weekly pattern, active if today falls within the
+  // service's date range and today's weekday flag is set.
   const calRows = parseSmall('calendar.txt', extractDir);
-  if (calRows.length > 0) {
-    const DOW = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
-    for (const row of calRows) {
-      if (!serviceIds.has(row.service_id)) continue;
-      const start = new Date(`${row.start_date.slice(0,4)}-${row.start_date.slice(4,6)}-${row.start_date.slice(6,8)}`);
-      const end   = new Date(`${row.end_date.slice(0,4)}-${row.end_date.slice(4,6)}-${row.end_date.slice(6,8)}`);
-      const lo = start < today ? today : start;
-      const hi = end   > sixMonthsOn ? sixMonthsOn : end;
-      for (let d = new Date(lo); d <= hi; d.setDate(d.getDate() + 1)) {
-        const dow = d.getDay();
-        if (row[DOW[dow]] !== '1') continue;
-        const dayType = dow === 0 ? 'sunday' : dow === 6 ? 'saturday' : 'weekday';
-        if (!serviceDayCounts.has(row.service_id)) serviceDayCounts.set(row.service_id, { weekday: 0, saturday: 0, sunday: 0 });
-        serviceDayCounts.get(row.service_id)[dayType]++;
-      }
-    }
-    log(`[${feed.name}] calendar.txt: ${calRows.length} service rows`);
+  for (const row of calRows) {
+    if (!serviceIds.has(row.service_id)) continue;
+    if (row.start_date > todayStr || row.end_date < todayStr) continue;
+    if (row[todayDowName] === '1') activeToday.add(row.service_id);
   }
+  log(`[${feed.name}] calendar.txt: ${calRows.length} service rows`);
 
-  // 4b. calendar_dates.txt (exceptions / sole source)
+  // 4b. calendar_dates.txt — exceptions for today: type 1 = added, type 2 = removed.
   const calDates = parseSmall('calendar_dates.txt', extractDir);
   log(`[${feed.name}] calendar_dates.txt: ${calDates.length.toLocaleString()} rows`);
   for (const row of calDates) {
-    if (!serviceIds.has(row.service_id) || row.exception_type !== '1') continue;
-    const d  = row.date;
-    const dt = new Date(`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`);
-    if (dt < today || dt > sixMonthsOn) continue;
-    const dow = dt.getDay();
-    const dayType = dow === 0 ? 'sunday' : dow === 6 ? 'saturday' : 'weekday';
-    if (!serviceDayCounts.has(row.service_id)) serviceDayCounts.set(row.service_id, { weekday: 0, saturday: 0, sunday: 0 });
-    serviceDayCounts.get(row.service_id)[dayType]++;
+    if (!serviceIds.has(row.service_id) || row.date !== todayStr) continue;
+    if (row.exception_type === '1') activeToday.add(row.service_id);
+    else if (row.exception_type === '2') activeToday.delete(row.service_id);
   }
-
-  // Classify: only mark as 'weekday' if weekday count strictly exceeds sunday count.
-  // Prevents holiday-only runs (e.g. Hemelvaartsdag, Pinkstermaandag) from leaking
-  // into the normal weekday schedule.
-  const serviceDay = new Map();
-  for (const [serviceId, counts] of serviceDayCounts) {
-    const days = [];
-    if (counts.weekday > 0 && counts.weekday > counts.sunday) days.push('weekday');
-    if (counts.saturday > 0) days.push('saturday');
-    if (counts.sunday > 0) days.push('sunday');
-    if (days.length > 0) serviceDay.set(serviceId, days);
-  }
-  log(`[${feed.name}] ${serviceDay.size} services classified`);
+  log(`[${feed.name}] ${activeToday.size} services active today (${todayStr})`);
 
   // 5. Stops — build prefixed stop map
   log(`[${feed.name}] Parsing stops.txt...`);
@@ -220,8 +193,11 @@ async function processFeed(feed, shared) {
   const repTripCandidates = new Map(); // "route_id|dir" → Set<trip_id>
   const candidateTripIds  = new Set(); // all valid trip_ids for candidates
 
+  // Representative trips for route-stop lists are selected from ALL trips (any
+  // service_id), not just those active today — route/stop-sequence data is
+  // static route info and should stay available even on days the route/line
+  // has no departures. Departure *times* below are still restricted to today.
   for (const trip of trips) {
-    if (!serviceDay.has(trip.service_id)) continue;
     const key = `${trip.route_id}|${trip.direction_id ?? '0'}`;
     if (!repTripCandidates.has(key)) repTripCandidates.set(key, new Set());
     repTripCandidates.get(key).add(trip.trip_id);
@@ -248,8 +224,7 @@ async function processFeed(feed, shared) {
       candidateStops.get(st.trip_id).push([seq, st.stop_id]);
     }
 
-    const dayTypes = serviceDay.get(trip.service_id);
-    if (!dayTypes?.length) return;
+    if (!activeToday.has(trip.service_id)) return;
 
     // Skip stops where boarding is not allowed (drop-off only / terminus arrivals).
     // pickup_type=1 means "No pickup available" per the GTFS spec — these are not departures.
@@ -257,7 +232,7 @@ async function processFeed(feed, shared) {
 
     const stopId = st.stop_id;
     usedStopIds.add(stopId);
-    if (!schedule[stopId]) schedule[stopId] = { weekday: [], saturday: [], sunday: [] };
+    if (!schedule[stopId]) schedule[stopId] = [];
 
     const entry = {
       time:     st.departure_time,
@@ -266,7 +241,7 @@ async function processFeed(feed, shared) {
       agency:   routeAgency.get(trip.route_id) || '',
       route_id: trip.route_id
     };
-    for (const day of dayTypes) schedule[stopId][day].push(entry);
+    schedule[stopId].push(entry);
   });
   log(`[${feed.name}] ${rowCount.toLocaleString()} stop_times rows processed`);
 
@@ -288,33 +263,38 @@ async function processFeed(feed, shared) {
 
   // 7. Sort + deduplicate per stop
   for (const sid of Object.keys(schedule)) {
-    for (const day of ['weekday','saturday','sunday']) {
-      const seen = new Set();
-      let entries = schedule[sid][day]
-        .sort((a, b) => a.time.localeCompare(b.time))
-        .filter(d => {
-          const key = `${d.time}|${d.line}|${d.headsign}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-      const lastMin = new Map();
-      entries = entries.filter(d => {
-        const key = `${d.line}|${d.headsign}`;
-        const [h, m] = d.time.split(':').map(Number);
-        const mins = h * 60 + m;
-        const last = lastMin.get(key);
-        if (last !== undefined && mins - last <= 2) return false;
-        lastMin.set(key, mins);
+    const seen = new Set();
+    let entries = schedule[sid]
+      .sort((a, b) => a.time.localeCompare(b.time))
+      .filter(d => {
+        const key = `${d.time}|${d.line}|${d.headsign}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
         return true;
       });
-      schedule[sid][day] = entries;
-    }
+    const lastMin = new Map();
+    entries = entries.filter(d => {
+      const key = `${d.line}|${d.headsign}`;
+      const [h, m] = d.time.split(':').map(Number);
+      const mins = h * 60 + m;
+      const last = lastMin.get(key);
+      if (last !== undefined && mins - last <= 2) return false;
+      lastMin.set(key, mins);
+      return true;
+    });
+    schedule[sid] = entries;
   }
 
-  // 8. Lines list
+  // 8. Lines list — only routes with at least one trip active today
+  const routeIdsActiveToday = new Set();
+  for (const trip of trips) {
+    if (activeToday.has(trip.service_id)) routeIdsActiveToday.add(trip.route_id);
+  }
+  log(`[${feed.name}] ${routeIdsActiveToday.size} routes active today`);
+  const routesToday = routes.filter(r => routeIdsActiveToday.has(r.route_id));
+
   const agencyRoutes = new Map();
-  for (const r of routes) {
+  for (const r of routesToday) {
     if (!agencyRoutes.has(r.agency_id)) agencyRoutes.set(r.agency_id, []);
     agencyRoutes.get(r.agency_id).push({
       id:         r.route_id,
@@ -334,8 +314,8 @@ async function processFeed(feed, shared) {
     });
   }
 
-  // Routes list (backward compat)
-  for (const r of routes) {
+  // Routes list (backward compat) — only routes active today
+  for (const r of routesToday) {
     allRoutesList.push({
       id:         r.route_id,
       short_name: r.route_short_name,
@@ -380,10 +360,10 @@ async function processFeed(feed, shared) {
 }
 
 async function main() {
-  const feeds = JSON.parse(readFileSync(FEEDS_FILE, 'utf8'));
-  log(`Processing ${feeds.length} feed(s): ${feeds.map(f => f.name).join(', ')}`);
+  const feed = JSON.parse(readFileSync(FEED_FILE, 'utf8'));
+  log(`Processing feed: ${feed.name}`);
 
-  // Shared accumulators across all feeds
+  // Accumulators populated while processing the feed
   const shared = {
     schedule:    {},
     usedStopIds: new Set(),
@@ -393,12 +373,10 @@ async function main() {
     allAgencies:   new Map()
   };
 
-  for (const feed of feeds) {
-    await processFeed(feed, shared);
-  }
+  await processFeed(feed, shared);
 
   const { schedule, usedStopIds, allStopMap, allRoutesList, allLinesList, allAgencies } = shared;
-  log(`Schedule built for ${Object.keys(schedule).length} stops across all feeds`);
+  log(`Schedule built for ${Object.keys(schedule).length} stops`);
 
   // Write output
   log('Writing output files...');
@@ -437,12 +415,9 @@ async function main() {
   ));
   log(`lines.json: ${allLinesList.length} agency groups`);
 
-  // feeds-info.json — per-feed stats for the UI
-  const feedsInfo = feeds.map(feed => {
-    const feedStops  = usedStops.length;
-    const feedRoutes = allLinesList.reduce((sum, ag) => sum + ag.routes.length, 0);
-    return { name: feed.name, label: feed.label || feed.name, routes: feedRoutes, stops: feedStops };
-  });
+  // feeds-info.json — stats for the UI (kept as an array for backward compat with app.js)
+  const feedRoutes = allLinesList.reduce((sum, ag) => sum + ag.routes.length, 0);
+  const feedsInfo = [{ name: feed.name, label: feed.label || feed.name, routes: feedRoutes, stops: usedStops.length }];
   writeFileSync(join(DATA_DIR, 'feeds-info.json'), JSON.stringify(feedsInfo));
 
   // Per-stop schedule files — stop IDs are now plain numeric GTFS IDs (no feed prefix)

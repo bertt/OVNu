@@ -15,8 +15,7 @@ Blog see https://bertt.wordpress.com/2026/05/11/gtfs-public-transport-data-as-a-
 
 - 📍 GPS location → nearest stops & stations on a Leaflet/OpenStreetMap map
 - 🔍 Search by stop name, station name, or city (multi-word autocomplete)
-- 🗓️ Day selector: Today / Mon–Fri / Saturday / Sunday
-- ⏱️ Today view shows only upcoming departures; next departure is highlighted
+- ⏱️ Shows only today's upcoming departures; next departure is highlighted
 - 🚉 Platform grouping: large stations (e.g. with platforms A/B/C) are shown as one entry; a **Platform** column appears in the departure table when relevant
 - 🗺️ Click any line in the departure table to view the full route on a map; if arriving from a stop the selected stop is highlighted and shown above the map with a link back
 - 📦 No backend — works on GitHub Pages or any static host
@@ -26,10 +25,10 @@ Blog see https://bertt.wordpress.com/2026/05/11/gtfs-public-transport-data-as-a-
 | File | Contents | Size |
 |---|---|---|
 | `data/stops.json` | 78,000+ stops & stations with coordinates | ~6 MB |
-| `data/schedules/{stop_id}.json` | Per-stop departures (time, line, headsign) | ~62,000 files |
+| `data/schedules/{stop_id}.json` | Per-stop departures for today only (time, line, headsign) | ~62,000 files |
 | `data/route-stops/{route_id}.json` | Ordered stop list per route direction | ~8,000 files |
 
-Stop IDs and route IDs in all data files are plain GTFS IDs (e.g. `3517780`, `106131`) — no feed prefix. The `data/` folder is **not committed to git** — it is generated fresh each week by the GitHub Actions workflow from the latest GTFS feed.
+Stop IDs and route IDs in all data files are plain GTFS IDs (e.g. `3517780`, `106131`) — no feed prefix. The `data/` folder is **not committed to git** — it is generated fresh every night by the GitHub Actions workflow from the latest GTFS feed, so schedules always reflect today's actual service (including calendar exceptions/holidays).
 
 ## Local development
 
@@ -55,19 +54,17 @@ The feed zip is cached at `build/gtfs-nl.zip`. Delete it to force a fresh downlo
 
 3. Trigger the first run manually: **Actions → OVNu – Build & Deploy → Run workflow**.
 
-The workflow runs automatically every **Monday at 04:00 UTC** to pick up updated schedules.
+The workflow runs automatically every **night at 03:30 UTC** to pick up the freshly updated GTFS feed (OVapi refreshes it around 03:00 UTC) so the site always shows today's schedule.
 
-## Configuring feeds
+## Configuring the feed
 
-The feed is defined in `build/feeds.json`:
+Only a single GTFS feed is supported. It is defined in `build/feed.json`:
 
 ```json
-[
-  { "name": "nl", "label": "🇳🇱 Netherlands (OVapi)", "url": "https://gtfs.ovapi.nl/nl/gtfs-nl.zip" }
-]
+{ "name": "nl", "label": "🇳🇱 Netherlands (OVapi)", "url": "https://gtfs.ovapi.nl/nl/gtfs-nl.zip" }
 ```
 
-To add a feed, append an entry to `feeds.json` and run `npm run build`. The build script handles both `calendar.txt` and `calendar_dates.txt` service definitions.
+To use a different feed, edit `feed.json` and run `npm run build`. The build script handles both `calendar.txt` and `calendar_dates.txt` service definitions.
 
 Popular GTFS sources:
 - 🇳🇱 Netherlands (all operators): `https://gtfs.ovapi.nl/nl/gtfs-nl.zip`
@@ -79,9 +76,9 @@ Popular GTFS sources:
 OVNu/
 ├── .github/
 │   └── workflows/
-│       └── deploy.yml        ← weekly build + GitHub Pages deploy
+│       └── deploy.yml        ← nightly build + GitHub Pages deploy
 ├── build/
-│   ├── feeds.json            ← GTFS feed definition
+│   ├── feed.json             ← GTFS feed definition
 │   └── process-gtfs.js       ← GTFS download, streaming pipeline, data generation
 ├── src/
 │   ├── index.html            ← main page (stop search + departures)

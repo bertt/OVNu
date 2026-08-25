@@ -6,7 +6,7 @@
  *  2. User triggers GPS or searches by name
  *  3. Find nearest stops/stations (haversine)
  *  4. Show on map + list
- *  5. User selects stop → show departures for chosen day
+ *  5. User selects stop → show today's upcoming departures
  */
 
 // ── Data loading ──────────────────────────────────────────────────────────────
@@ -15,7 +15,7 @@ let stops = [];        // [{id, name, lat, lon, town}]
 let agencyById = {};       // "feed:rawId" → agency_name
 let agencyByRawId = {};    // "rawId" → {name}
 let dataLoaded = false;
-const scheduleCache = {}; // stop_id → {weekday:[], saturday:[], sunday:[]}
+const scheduleCache = {}; // stop_id → [{time, line, headsign, agency, route_id}, ...]
 
 async function loadData() {
   const [stopsRes, agenciesRes, feedsRes] = await Promise.all([
@@ -94,7 +94,7 @@ async function loadStopSchedule(stopId) {
   if (scheduleCache[stopId]) return scheduleCache[stopId];
   // stopId is "feed:localId" (e.g. "nl:3517780") → path "feed/localId"
   const res = await fetch(`../data/schedules/${stopId}.json`);
-  if (!res.ok) return { weekday: [], saturday: [], sunday: [] };
+  if (!res.ok) return [];
   scheduleCache[stopId] = await res.json();
   return scheduleCache[stopId];
 }
@@ -127,14 +127,7 @@ function nearestStops(lat, lon, n = 8) {
     .slice(0, n);
 }
 
-// ── Day helpers ───────────────────────────────────────────────────────────────
-
-function todayDayType() {
-  const dow = new Date().getDay(); // 0=sun, 6=sat
-  if (dow === 0) return 'sunday';
-  if (dow === 6) return 'saturday';
-  return 'weekday';
-}
+// ── Time helpers ──────────────────────────────────────────────────────────────
 
 function nowMinutes() {
   const d = new Date();
@@ -269,27 +262,18 @@ function selectStop(stop) {
   viewportMarkerById[stop.id]?.openPopup();
   // Show departures — merge all stops sharing this baseName (all platforms)
   document.getElementById('departuresTitle').textContent = stop.baseName;
+  document.getElementById('todayDate').textContent = `Vandaag, ${formatTodayDate()}`;
   document.getElementById('departuresPanel').hidden = false;
-  renderDepartures(stop.baseName, currentDay());
+  renderDepartures(stop.baseName);
 }
 
-function currentDay() {
-  const active = document.querySelector('.day-btn.active');
-  const day = active?.dataset.day;
-  return day === 'today' ? todayDayType() : (day || todayDayType());
+function formatTodayDate() {
+  return new Date().toLocaleDateString('nl-NL', { weekday: 'long', day: 'numeric', month: 'long' });
 }
-
-document.querySelectorAll('.day-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.day-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    if (selectedStopName) renderDepartures(selectedStopName, currentDay());
-  });
-});
 
 // ── Departures rendering ──────────────────────────────────────────────────────
 
-async function renderDepartures(stationName, dayType) {
+async function renderDepartures(stationName) {
   const container = document.getElementById('departuresContent');
   container.innerHTML = '<p class="empty-msg"><span class="spinner"></span> Laden…</p>';
 
@@ -301,7 +285,7 @@ async function renderDepartures(stationName, dayType) {
   let deps = [];
   for (let i = 0; i < stationStops.length; i++) {
     const platform = stationStops[i].platform;
-    for (const dep of (scheds[i][dayType] ?? [])) {
+    for (const dep of (scheds[i] ?? [])) {
       const key = `${dep.time}|${dep.line}|${dep.headsign}|${platform ?? ''}`;
       if (!seen.has(key)) { seen.add(key); deps.push({ ...dep, platform }); }
     }
@@ -320,18 +304,12 @@ async function renderDepartures(stationName, dayType) {
     return true;
   });
 
-  // For "today" view: filter to upcoming departures only
-  const isToday = document.querySelector('.day-btn.active')?.dataset.day === 'today';
-  if (isToday) {
-    const nowMin = nowMinutes();
-    deps = deps.filter(d => timeToMinutes(d.time) >= nowMin);
-  }
-
-  const dayLabel = dayType === 'weekday' ? 'maandag–vrijdag'
-                 : dayType === 'saturday' ? 'zaterdag' : 'zondag';
+  // Only show upcoming departures for today
+  const nowMin = nowMinutes();
+  deps = deps.filter(d => timeToMinutes(d.time) >= nowMin);
 
   if (deps.length === 0) {
-    container.innerHTML = `<p class="empty-msg">Geen ${isToday ? 'komende' : ''} vertrektijden gevonden voor ${dayLabel}.</p>`;
+    container.innerHTML = `<p class="empty-msg">Geen komende vertrektijden gevonden voor vandaag (${formatTodayDate()}).</p>`;
     return;
   }
 
@@ -344,7 +322,7 @@ async function renderDepartures(stationName, dayType) {
     const [h, m] = dep.time.split(':').map(Number);
     const overnight = h >= 24;
     const displayTime = `${String(h % 24).padStart(2, '0')}:${String(m).padStart(2, '0')}${overnight ? '<span class="overnight" title="Volgende dag">+1</span>' : ''}`;
-    const cls = i === 0 && isToday ? 'next-up' : '';
+    const cls = i === 0 ? 'next-up' : '';
     const agInfo = dep.agency ? agencyByRawId[dep.agency] : null;
     const agencyName = agInfo ? agInfo.name : (dep.agency || '');
     const stopIdSuffix = selectedStopId ? `&stop_id=${encodeURIComponent(selectedStopId)}` : '';
@@ -538,6 +516,9 @@ async function init() {
   document.getElementById('contentGrid').hidden = false;
   initMap(52.1, 5.3, 7);
   setTimeout(() => map?.invalidateSize(), 100);
+
+  const headerDateEl = document.getElementById('headerDate');
+  if (headerDateEl) headerDateEl.textContent = `📅 Vandaag, ${formatTodayDate()}`;
 
   showStatus('<span class="spinner"></span> Haltegegevens laden…', 'info');
   try {

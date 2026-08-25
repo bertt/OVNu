@@ -1,7 +1,5 @@
-[
-  {
-    "name": "nl",
-    "label": "🇳🇱 Netherlands (OVapi)",
-    "url": "https://gtfs.ovapi.nl/nl/gtfs-nl.zip"
-  }
-]
+{
+  "name": "nl",
+  "label": "🇳🇱 Netherlands (OVapi)",
+  "url": "https://gtfs.ovapi.nl/nl/gtfs-nl.zip"
+}
